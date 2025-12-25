@@ -93,7 +93,8 @@ public class ImageProcessorImpl implements ImageProcessor {
 
     /**
      * 获取跳过处理的原因
-     * 检查各种条件，返回第一个不满足的原因
+     * 注意：格式、是否启用、是否有处理功能等检查已在 WebFilter 中提前完成
+     * 此方法仅检查文件大小相关条件
      *
      * @param contentType 文件 MIME 类型
      * @param fileSize    文件大小
@@ -102,50 +103,16 @@ public class ImageProcessorImpl implements ImageProcessor {
      */
     @Override
     public String getSkipReason(String contentType, long fileSize, ProcessingConfig config) {
-        // 检查是否启用处理
-        if (!config.isEnabled()) {
-            return "图片处理已禁用";
-        }
-
-        // 检查格式（支持简单格式如 jpeg, png 或完整 MIME 类型如 image/jpeg）
-        List<String> allowedFormats = config.getAllowedFormats();
-        // 空列表表示不处理任何图片
-        if (allowedFormats == null || allowedFormats.isEmpty()) {
-            return "未配置允许的图片格式";
-        }
-        // 从 contentType 提取格式（如 image/jpeg -> jpeg）
-        String format = extractFormat(contentType);
-        boolean formatAllowed = allowedFormats.stream()
-            .anyMatch(allowed -> {
-                String normalizedAllowed = allowed.trim().toLowerCase();
-                String normalizedFormat = format.toLowerCase();
-                // 支持完整 MIME 类型或简单格式
-                return normalizedAllowed.equals(normalizedFormat) 
-                    || normalizedAllowed.equals("image/" + normalizedFormat)
-                    || ("image/" + normalizedAllowed).equals(contentType.toLowerCase());
-            });
-        if (!formatAllowed) {
-            return "文件类型 " + contentType + " 不在允许列表中";
-        }
-
         // 检查最小文件大小
         long minFileSize = config.getMinFileSize();
         if (minFileSize > 0 && fileSize < minFileSize) {
             return "文件大小 " + formatFileSize(fileSize) + " 小于最小限制 " + formatFileSize(minFileSize);
         }
 
-        // 检查最大文件大小
+        // 检查最大文件大小（兜底，Content-Length 可能为 -1）
         long maxFileSize = config.getMaxFileSize();
         if (maxFileSize > 0 && fileSize > maxFileSize) {
             return "文件大小 " + formatFileSize(fileSize) + " 大于最大限制 " + formatFileSize(maxFileSize);
-        }
-
-        // 检查是否有任何处理功能启用
-        boolean hasProcessing = config.getWatermark().isEnabled() 
-            || config.getFormatConversion().isEnabled();
-        
-        if (!hasProcessing) {
-            return "没有启用任何处理功能（水印/格式转换）";
         }
 
         return null; // 不需要跳过
@@ -181,6 +148,36 @@ public class ImageProcessorImpl implements ImageProcessor {
             return mimeType.substring(6);
         }
         return mimeType;
+    }
+
+    /**
+     * 检查文件格式是否在允许处理的列表中
+     * 用于提前判断，避免不需要处理的文件读入内存
+     *
+     * @param contentType 文件 MIME 类型
+     * @param config      处理配置
+     * @return 是否是允许处理的格式
+     */
+    @Override
+    public boolean isAllowedFormat(String contentType, ProcessingConfig config) {
+        if (contentType == null || contentType.isBlank()) {
+            return false;
+        }
+        
+        List<String> allowedFormats = config.getAllowedFormats();
+        if (allowedFormats == null || allowedFormats.isEmpty()) {
+            return false;
+        }
+        
+        String format = extractFormat(contentType);
+        return allowedFormats.stream()
+            .anyMatch(allowed -> {
+                String normalizedAllowed = allowed.trim().toLowerCase();
+                String normalizedFormat = format.toLowerCase();
+                return normalizedAllowed.equals(normalizedFormat) 
+                    || normalizedAllowed.equals("image/" + normalizedFormat)
+                    || ("image/" + normalizedAllowed).equals(contentType.toLowerCase());
+            });
     }
 
     /**

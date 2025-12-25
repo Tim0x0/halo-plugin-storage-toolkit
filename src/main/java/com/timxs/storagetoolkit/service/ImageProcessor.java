@@ -42,4 +42,14 @@ public interface ImageProcessor {
      * @return 跳过原因，如果不需要跳过则返回 null
      */
     String getSkipReason(String contentType, long fileSize, ProcessingConfig config);
+
+    /**
+     * 检查文件格式是否在允许处理的列表中
+     * 用于提前判断，避免不需要处理的文件读入内存
+     *
+     * @param contentType 文件 MIME 类型
+     * @param config      处理配置
+     * @return 是否是允许处理的格式
+     */
+    boolean isAllowedFormat(String contentType, ProcessingConfig config);
 }

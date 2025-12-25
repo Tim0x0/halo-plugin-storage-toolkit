@@ -34,12 +34,14 @@ import org.springframework.web.server.ServerWebExchangeDecorator;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import run.halo.app.core.extension.attachment.Attachment;
 import run.halo.app.core.extension.service.AttachmentService;
 import run.halo.app.security.AdditionalWebFilter;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.Semaphore;
 
 /**
  * 图片处理 WebFilter
@@ -61,6 +63,12 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     
     private static final com.fasterxml.jackson.databind.ObjectMapper OBJECT_MAPPER = 
         new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+
+    /**
+     * 并发处理限制，最多同时处理 3 张图片
+     * 防止多用户同时上传大图导致内存溢出
+     */
+    private static final Semaphore PROCESSING_PERMITS = new Semaphore(3);
 
     /**
      * 控制台编辑器上传路径匹配器（新版 Console API - Halo 2.22+）
@@ -176,59 +184,117 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 String contentType = getContentType(filePart);
                 MediaType mediaType = contentType != null ? MediaType.parseMediaType(contentType) : MediaType.APPLICATION_OCTET_STREAM;
 
-                // 非图片文件直接上传（不处理）
-                if (!isImageFile(filePart)) {
-                    log.debug("Non-image file, skip processing: {}", filename);
-                    return DataBufferUtils.join(filePart.content())
-                        .flatMap(dataBuffer -> {
-                            byte[] data = new byte[dataBuffer.readableByteCount()];
-                            dataBuffer.read(data);
-                            DataBufferUtils.release(dataBuffer);
-                            return uploadAndRespond(attachConfig, filename, data, mediaType, auth, exchange);
-                        });
+                // 检查是否有任何处理功能启用
+                boolean hasProcessing = config.getWatermark().isEnabled() 
+                    || config.getFormatConversion().isEnabled();
+                if (!hasProcessing) {
+                    log.debug("No processing enabled, skip: {}", filename);
+                    return uploadWithStream(attachConfig, filename, filePart.content(), mediaType, auth, exchange);
+                }
+
+                // 检查是否是允许处理的格式，不是则直接流式上传
+                if (!imageProcessor.isAllowedFormat(contentType, config)) {
+                    log.debug("Format not in allowed list, skip processing: {} ({})", filename, contentType);
+                    return uploadWithStream(attachConfig, filename, filePart.content(), mediaType, auth, exchange);
                 }
 
                 Instant startTime = Instant.now();
                 MediaType imageMediaType = MediaType.parseMediaType(contentType);
 
-                return DataBufferUtils.join(filePart.content())
-                    .flatMap(dataBuffer -> {
-                        byte[] imageData = new byte[dataBuffer.readableByteCount()];
-                        dataBuffer.read(imageData);
-                        DataBufferUtils.release(dataBuffer);
-                        long originalSize = imageData.length;
+                // 提前检查 Content-Length，大文件直接跳过处理
+                long contentLength = filePart.headers().getContentLength();
+                long maxFileSize = config.getMaxFileSize();
+                if (maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize) {
+                    log.info("File size {} exceeds max limit {}, skip processing: {}", 
+                        contentLength, maxFileSize, filename);
+                    saveSkippedLog(filename, contentType, contentLength, startTime, 
+                        "文件大小超过限制（提前检查）", source);
+                    // 直接流式上传，不读入内存
+                    return uploadWithStream(attachConfig, filename, filePart.content(), imageMediaType, auth, exchange);
+                }
 
-                        // 检查是否需要处理
-                        String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
-                        if (skipReason != null) {
-                            log.debug("File skipped: {} - {}", filename, skipReason);
-                            saveSkippedLog(filename, contentType, originalSize, startTime, skipReason, source);
-                            return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
-                        }
+                // 获取处理许可，限制并发数
+                return Mono.fromCallable(() -> {
+                        PROCESSING_PERMITS.acquire();
+                        return true;
+                    })
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .flatMap(acquired -> DataBufferUtils.join(filePart.content())
+                        .flatMap(dataBuffer -> {
+                            byte[] imageData = new byte[dataBuffer.readableByteCount()];
+                            dataBuffer.read(imageData);
+                            DataBufferUtils.release(dataBuffer);
+                            long originalSize = imageData.length;
 
-                        // 处理图片
-                        return imageProcessor.process(imageData, filename, contentType, config)
-                            .flatMap(result -> {
-                                saveProcessingLog(result, filename, originalSize, startTime, source);
-                                
-                                if (result.status() == ProcessingStatus.SKIPPED ||
-                                    result.status() == ProcessingStatus.FAILED) {
-                                    return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
-                                }
-
-                                log.info("Image processed: {} -> {} ({} bytes -> {} bytes, {}% reduction)",
-                                    filename, result.filename(),
-                                    originalSize, result.data().length,
-                                    originalSize > 0 ? (100 - (result.data().length * 100 / originalSize)) : 0);
-
-                                return uploadAndRespond(attachConfig, result.filename(), 
-                                    result.data(), MediaType.parseMediaType(result.contentType()), auth, exchange);
-                            })
-                            .onErrorResume(e -> {
-                                log.error("Image processing error, uploading original: {}", e.getMessage());
+                            // 检查是否需要处理
+                            String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
+                            if (skipReason != null) {
+                                log.debug("File skipped: {} - {}", filename, skipReason);
+                                saveSkippedLog(filename, contentType, originalSize, startTime, skipReason, source);
                                 return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
-                            });
-                    });
+                            }
+
+                            // 处理图片
+                            return imageProcessor.process(imageData, filename, contentType, config)
+                                .flatMap(result -> {
+                                    saveProcessingLog(result, filename, originalSize, startTime, source);
+                                    
+                                    if (result.status() == ProcessingStatus.SKIPPED ||
+                                        result.status() == ProcessingStatus.FAILED) {
+                                        return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
+                                    }
+
+                                    log.info("Image processed: {} -> {} ({} bytes -> {} bytes, {}% reduction)",
+                                        filename, result.filename(),
+                                        originalSize, result.data().length,
+                                        originalSize > 0 ? (100 - (result.data().length * 100 / originalSize)) : 0);
+
+                                    return uploadAndRespond(attachConfig, result.filename(), 
+                                        result.data(), MediaType.parseMediaType(result.contentType()), auth, exchange);
+                                })
+                                .onErrorResume(e -> {
+                                    log.error("Image processing error, uploading original: {}", e.getMessage());
+                                    return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
+                                });
+                        })
+                    )
+                    .doFinally(signal -> PROCESSING_PERMITS.release());
+            });
+    }
+
+    /**
+     * 流式上传文件（不读入内存）
+     * 用于大文件跳过处理时直接上传
+     */
+    private Mono<Void> uploadWithStream(AttachmentUploadConfig attachConfig, String filename,
+                                         Flux<DataBuffer> content, MediaType mediaType,
+                                         org.springframework.security.core.Authentication auth,
+                                         ServerWebExchange exchange) {
+        log.debug("Stream uploading file: {} to policy: {}, group: {}", 
+            filename, attachConfig.policyName(), attachConfig.groupName());
+        
+        return attachmentService.upload(
+                attachConfig.policyName(),
+                attachConfig.groupName(),
+                filename,
+                content,
+                mediaType
+            )
+            .doOnNext(a -> log.info("Stream upload success: {}", a.getMetadata().getName()))
+            .flatMap(attachment -> attachmentService.getPermalink(attachment)
+                .doOnNext(permalink -> {
+                    if (attachment.getStatus() == null) {
+                        attachment.setStatus(new Attachment.AttachmentStatus());
+                    }
+                    attachment.getStatus().setPermalink(permalink.toString());
+                })
+                .thenReturn(attachment)
+            )
+            .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth))
+            .flatMap(attachment -> writeJsonResponse(exchange, attachment))
+            .onErrorResume(e -> {
+                log.error("Failed to stream upload attachment: {}", e.getMessage(), e);
+                return writeErrorResponse(exchange, e.getMessage());
             });
     }
 
@@ -331,8 +397,22 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                     return chain.filter(exchange);
                 }
 
-                if (!isImageFile(filePart)) {
-                    log.debug("Non-image file, skip processing: {}", filePart.filename());
+                String fileContentType = getContentType(filePart);
+
+                // 检查是否有任何处理功能启用
+                boolean hasProcessing = config.getWatermark().isEnabled() 
+                    || config.getFormatConversion().isEnabled();
+                if (!hasProcessing) {
+                    log.debug("No processing enabled, skip: {}", filePart.filename());
+                    return filePart.content().collectList()
+                        .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
+                        .flatMap(chain::filter);
+                }
+                
+                // 检查是否是允许处理的格式
+                if (!imageProcessor.isAllowedFormat(fileContentType, config)) {
+                    log.debug("Format not in allowed list, skip processing: {} ({})", 
+                        filePart.filename(), fileContentType);
                     return filePart.content().collectList()
                         .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
                         .flatMap(chain::filter);
@@ -360,52 +440,74 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
         String contentType = getContentType(filePart);
         Instant startTime = Instant.now();
 
-        return DataBufferUtils.join(filePart.content())
-            .flatMap(dataBuffer -> {
-                byte[] imageData = new byte[dataBuffer.readableByteCount()];
-                dataBuffer.read(imageData);
-                DataBufferUtils.release(dataBuffer);
-                long originalSize = imageData.length;
+        // 提前检查 Content-Length，大文件直接跳过处理
+        long contentLength = filePart.headers().getContentLength();
+        long maxFileSize = config.getMaxFileSize();
+        if (maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize) {
+            log.info("File size {} exceeds max limit {}, skip processing: {}", 
+                contentLength, maxFileSize, filename);
+            saveSkippedLog(filename, contentType, contentLength, startTime, 
+                "文件大小超过限制（提前检查）", source);
+            // 直接流式传递，不读入内存
+            return filePart.content().collectList()
+                .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
+                .flatMap(chain::filter);
+        }
 
-                String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
-                if (skipReason != null) {
-                    log.debug("File skipped: {} - {}", filename, skipReason);
-                    saveSkippedLog(filename, contentType, originalSize, startTime, skipReason, source);
-                    DataBuffer buffer = bufferFactory.wrap(imageData);
-                    return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                        .flatMap(chain::filter);
-                }
+        // 获取处理许可，限制并发数
+        return Mono.fromCallable(() -> {
+                PROCESSING_PERMITS.acquire();
+                return true;
+            })
+            .subscribeOn(Schedulers.boundedElastic())
+            .flatMap(acquired -> DataBufferUtils.join(filePart.content())
+                .flatMap(dataBuffer -> {
+                    byte[] imageData = new byte[dataBuffer.readableByteCount()];
+                    dataBuffer.read(imageData);
+                    DataBufferUtils.release(dataBuffer);
+                    long originalSize = imageData.length;
 
-                return imageProcessor.process(imageData, filename, contentType, config)
-                    .flatMap(result -> {
-                        saveProcessingLog(result, filename, originalSize, startTime, source);
-
-                        if (result.status() == ProcessingStatus.SKIPPED ||
-                            result.status() == ProcessingStatus.FAILED) {
-                            DataBuffer buffer = bufferFactory.wrap(imageData);
-                            return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                                .flatMap(chain::filter);
-                        }
-
-                        log.info("Image processed: {} -> {} ({} bytes -> {} bytes, {}% reduction)",
-                            filename, result.filename(),
-                            originalSize, result.data().length,
-                            originalSize > 0 ? (100 - (result.data().length * 100 / originalSize)) : 0);
-
-                        DataBuffer processedBuffer = bufferFactory.wrap(result.data());
-                        MediaType newContentType = MediaType.parseMediaType(result.contentType());
-                        
-                        return decorateExchange(exchange, parts, filePart, 
-                            Flux.just(processedBuffer), result.filename(), newContentType)
-                            .flatMap(chain::filter);
-                    })
-                    .onErrorResume(e -> {
-                        log.error("Image processing error, using original: {}", e.getMessage());
+                    String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
+                    if (skipReason != null) {
+                        log.debug("File skipped: {} - {}", filename, skipReason);
+                        saveSkippedLog(filename, contentType, originalSize, startTime, skipReason, source);
                         DataBuffer buffer = bufferFactory.wrap(imageData);
                         return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
                             .flatMap(chain::filter);
-                    });
-            });
+                    }
+
+                    return imageProcessor.process(imageData, filename, contentType, config)
+                        .flatMap(result -> {
+                            saveProcessingLog(result, filename, originalSize, startTime, source);
+
+                            if (result.status() == ProcessingStatus.SKIPPED ||
+                                result.status() == ProcessingStatus.FAILED) {
+                                DataBuffer buffer = bufferFactory.wrap(imageData);
+                                return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
+                                    .flatMap(chain::filter);
+                            }
+
+                            log.info("Image processed: {} -> {} ({} bytes -> {} bytes, {}% reduction)",
+                                filename, result.filename(),
+                                originalSize, result.data().length,
+                                originalSize > 0 ? (100 - (result.data().length * 100 / originalSize)) : 0);
+
+                            DataBuffer processedBuffer = bufferFactory.wrap(result.data());
+                            MediaType newContentType = MediaType.parseMediaType(result.contentType());
+                            
+                            return decorateExchange(exchange, parts, filePart, 
+                                Flux.just(processedBuffer), result.filename(), newContentType)
+                                .flatMap(chain::filter);
+                        })
+                        .onErrorResume(e -> {
+                            log.error("Image processing error, using original: {}", e.getMessage());
+                            DataBuffer buffer = bufferFactory.wrap(imageData);
+                            return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
+                                .flatMap(chain::filter);
+                        });
+                })
+            )
+            .doFinally(signal -> PROCESSING_PERMITS.release());
     }
 
     private boolean shouldProcessForConfig(ProcessingConfig config, String policyName, String groupName) {
@@ -558,11 +660,6 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     private boolean isMultipartRequest(ServerHttpRequest request) {
         MediaType contentType = request.getHeaders().getContentType();
         return contentType != null && contentType.isCompatibleWith(MediaType.MULTIPART_FORM_DATA);
-    }
-
-    private boolean isImageFile(FilePart filePart) {
-        MediaType contentType = filePart.headers().getContentType();
-        return contentType != null && contentType.getType().equals("image");
     }
 
     private String getContentType(FilePart filePart) {
