@@ -11,7 +11,7 @@ spec:
           name: basic
           label: 基本设置
           children:
-            - $formkit: checkbox
+            - $formkit: switch
               id: imageProcessingEnabled
               key: imageProcessingEnabled
               name: imageProcessingEnabled
@@ -19,7 +19,7 @@ spec:
               value: false
               help: 启用后将自动处理上传的图片
             
-            - $formkit: checkbox
+            - $formkit: switch
               if: "$get(imageProcessingEnabled).value"
               name: processEditorImages
               label: 处理编辑器图片
@@ -89,7 +89,7 @@ spec:
           name: formatConversion
           label: 格式转换
           children:
-            - $formkit: checkbox
+            - $formkit: switch
               id: formatConversionEnabled
               key: formatConversionEnabled
               name: enabled
@@ -122,7 +122,7 @@ spec:
           name: watermark
           label: 水印设置
           children:
-            - $formkit: checkbox
+            - $formkit: switch
               id: watermarkEnabled
               key: watermarkEnabled
               name: enabled
@@ -186,7 +186,7 @@ spec:
               name: imageScale
               id: watermarkImageScale
               key: watermarkImageScale
-              label: 水印缩放比例（水印图片相对于原图的比例 %）
+              label: 水印缩放比例（水印宽度占原图宽度的 %）
               value: 20
               min: 1
               max: 100
@@ -259,5 +259,5 @@ spec:
           label: 日志保留天数
           value: 30
           min: 1
-          max: 365
-          help: 超过此天数的日志将被自动清理（1-365 天）
+          max: 30
+          help: 超过此天数的日志将被自动清理（1-30 天）

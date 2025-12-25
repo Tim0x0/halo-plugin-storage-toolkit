@@ -171,19 +171,6 @@ public class FormatConverterImpl implements FormatConverter {
             return true;
         }
         
-        // 检查 AVIF 格式（需要额外的 native 库支持）
-        if (format == ImageFormat.AVIF) {
-            // AVIF 需要额外的 native 库支持，预留扩展点
-            // 如果未来添加 AVIF 支持，需要引入相应的 ImageIO 插件
-            String[] writerFormats = ImageIO.getWriterFormatNames();
-            for (String f : writerFormats) {
-                if ("avif".equalsIgnoreCase(f)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        
         // 检查是否在支持的格式集合中
         return SUPPORTED_FORMATS.contains(format);
     }

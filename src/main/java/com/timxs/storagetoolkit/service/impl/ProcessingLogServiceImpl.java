@@ -98,15 +98,20 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
 
     /**
      * 删除过期日志
-     * 根据保留天数删除超过期限的日志
+     * 根据保留天数删除超过期限的日志（按日期截断，删除 N 天前的日志）
      *
      * @param retentionDays 保留天数
      * @return 完成信号
      */
     @Override
     public Mono<Void> deleteExpired(int retentionDays) {
-        // 计算截止时间
-        Instant cutoff = Instant.now().minus(retentionDays, ChronoUnit.DAYS);
+        // 计算截止日期（当天 0 点），删除该日期之前的所有日志
+        Instant cutoff = Instant.now()
+            .atZone(java.time.ZoneId.systemDefault())
+            .minusDays(retentionDays)
+            .toLocalDate()
+            .atStartOfDay(java.time.ZoneId.systemDefault())
+            .toInstant();
         
         return client.listAll(ProcessingLog.class, new ListOptions(), null)
             .filter(log -> {
@@ -120,7 +125,7 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
                 // 只删除超过保留期限的日志
                 return log.getSpec().getProcessedAt().isBefore(cutoff);
             })
-            .flatMap(log -> client.delete(log).then())
+            .flatMap(log -> client.delete(log).then(), 100)
             .then()
             .doOnSuccess(v -> log.info("Deleted expired processing logs older than {} days", retentionDays));
     }
@@ -143,7 +148,7 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
                 long count = logs.size();
                 // 逐个删除
                 return Flux.fromIterable(logs)
-                    .flatMap(logEntry -> client.delete(logEntry))
+                    .flatMap(logEntry -> client.delete(logEntry), 100)
                     .then(Mono.just(count));
             })
             .doOnSuccess(count -> log.info("Deleted all {} processing logs", count));

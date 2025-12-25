@@ -12,11 +12,6 @@ public enum ImageFormat {
     WEBP("image/webp", "webp"),
     
     /**
-     * AVIF 格式（新一代格式，压缩率更高，需要额外支持）
-     */
-    AVIF("image/avif", "avif"),
-    
-    /**
      * 保持原格式不变
      */
     ORIGINAL(null, null);

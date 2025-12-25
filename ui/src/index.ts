@@ -1,4 +1,4 @@
-import { definePlugin } from '@halo-dev/console-shared'
+import { definePlugin } from '@halo-dev/ui-shared'
 import ProcessingLogsView from './views/ProcessingLogsView.vue'
 import { IconBookRead } from '@halo-dev/components'
 import { markRaw } from 'vue'

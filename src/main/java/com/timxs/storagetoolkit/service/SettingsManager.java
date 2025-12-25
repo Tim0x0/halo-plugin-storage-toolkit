@@ -17,10 +17,27 @@ public interface SettingsManager {
     Mono<ProcessingConfig> getConfig();
 
     /**
-     * 获取文章附件存储策略
-     * 从 SystemSetting.Post.attachmentPolicyName 读取
-     *
-     * @return 存储策略名称
+     * 附件上传配置
      */
-    Mono<String> getPostAttachmentPolicy();
+    record AttachmentUploadConfig(String policyName, String groupName) {
+        public static AttachmentUploadConfig empty() {
+            return new AttachmentUploadConfig("", "");
+        }
+    }
+
+    /**
+     * 获取管理端附件上传配置
+     * 从 SystemSetting.Attachment.console 读取
+     *
+     * @return 附件上传配置
+     */
+    Mono<AttachmentUploadConfig> getConsoleAttachmentConfig();
+
+    /**
+     * 获取个人中心附件上传配置
+     * 从 SystemSetting.Attachment.uc 读取
+     *
+     * @return 附件上传配置
+     */
+    Mono<AttachmentUploadConfig> getUcAttachmentConfig();
 }

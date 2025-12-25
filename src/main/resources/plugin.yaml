@@ -7,8 +7,8 @@ metadata:
   name: storage-toolkit
 spec:
   enabled: true
-  version: "0.0.1"
-  requires: ">=2.21.0"
+  version: "0.1.0"
+  requires: ">=2.22.1"
   author:
     name: Tim0x0
     website: https://github.com/Tim0x0

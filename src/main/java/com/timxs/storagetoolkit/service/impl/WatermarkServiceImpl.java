@@ -58,9 +58,9 @@ public class WatermarkServiceImpl implements WatermarkService {
             int marginX = config.calculateMarginX(image.getWidth());
             int marginY = config.calculateMarginY(image.getHeight());
             
-            // 计算可用空间（水印最多占用的宽度/高度）
-            int maxTextWidth = (int) (image.getWidth() * 0.8) - marginX * 2;
-            int maxTextHeight = (int) (image.getHeight() * 0.8) - marginY * 2;
+            // 计算可用空间（水印最多占用的宽度/高度），防止边距过大导致负数
+            int maxTextWidth = Math.max(1, (int) (image.getWidth() * 0.8) - marginX * 2);
+            int maxTextHeight = Math.max(1, (int) (image.getHeight() * 0.8) - marginY * 2);
             
             // 自适应字体大小
             int fontSize = config.fontSize();
@@ -141,9 +141,11 @@ public class WatermarkServiceImpl implements WatermarkService {
             return image;
         }
 
-        // 计算水印缩放后的尺寸
-        int scaledWidth = (int) (watermarkImage.getWidth() * config.scale());
-        int scaledHeight = (int) (watermarkImage.getHeight() * config.scale());
+        // 按原图宽度的百分比计算水印尺寸，保持水印宽高比
+        int targetWidth = (int) (image.getWidth() * config.scale());
+        double aspectRatio = (double) watermarkImage.getHeight() / watermarkImage.getWidth();
+        int scaledWidth = targetWidth;
+        int scaledHeight = (int) (targetWidth * aspectRatio);
         
         // 缩放后尺寸无效时，直接返回原图
         if (scaledWidth <= 0 || scaledHeight <= 0) {

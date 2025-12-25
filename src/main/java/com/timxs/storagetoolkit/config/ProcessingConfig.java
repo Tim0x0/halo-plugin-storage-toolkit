@@ -15,7 +15,7 @@ public class ProcessingConfig {
     /**
      * 是否启用图片处理
      */
-    private boolean enabled = true;
+    private boolean enabled = false;
     
     /**
      * 目标存储策略（为空则处理所有策略）

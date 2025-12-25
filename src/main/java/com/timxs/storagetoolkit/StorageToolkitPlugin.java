@@ -8,8 +8,11 @@ import run.halo.app.plugin.BasePlugin;
 import run.halo.app.plugin.PluginContext;
 
 import javax.imageio.spi.IIORegistry;
+import javax.imageio.spi.IIOServiceProvider;
 import javax.imageio.spi.ImageReaderSpi;
 import javax.imageio.spi.ImageWriterSpi;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Storage Toolkit 插件主类
@@ -26,6 +29,11 @@ public class StorageToolkitPlugin extends BasePlugin {
      * Halo 扩展模式管理器，用于注册和取消注册 Extension
      */
     private final SchemeManager schemeManager;
+    
+    /**
+     * 已注册的 SPI 列表，用于插件停止时注销
+     */
+    private final List<IIOServiceProvider> registeredSpis = new ArrayList<>();
 
     /**
      * 构造函数
@@ -57,11 +65,14 @@ public class StorageToolkitPlugin extends BasePlugin {
 
     /**
      * 插件停止时调用
-     * 取消注册 Extension
+     * 取消注册 Extension 和 SPI
      */
     @Override
     public void stop() {
         log.info("Storage Toolkit 插件停止中...");
+
+        // 注销 WebP ImageIO SPI
+        unregisterWebPImageIO();
 
         // 取消注册 Extension
         schemeManager.unregister(schemeManager.get(ProcessingLog.class));
@@ -87,6 +98,7 @@ public class StorageToolkitPlugin extends BasePlugin {
                 Class<?> readerSpiClass = pluginClassLoader.loadClass("com.luciad.imageio.webp.WebPImageReaderSpi");
                 ImageReaderSpi readerSpi = (ImageReaderSpi) readerSpiClass.getDeclaredConstructor().newInstance();
                 registry.registerServiceProvider(readerSpi);
+                registeredSpis.add(readerSpi);
                 log.info("WebP ImageReaderSpi 注册成功: {}", readerSpiClass.getName());
             } catch (Exception e) {
                 log.warn("WebP ImageReaderSpi 注册失败: {}", e.getMessage());
@@ -97,6 +109,7 @@ public class StorageToolkitPlugin extends BasePlugin {
                 Class<?> writerSpiClass = pluginClassLoader.loadClass("com.luciad.imageio.webp.WebPImageWriterSpi");
                 ImageWriterSpi writerSpi = (ImageWriterSpi) writerSpiClass.getDeclaredConstructor().newInstance();
                 registry.registerServiceProvider(writerSpi);
+                registeredSpis.add(writerSpi);
                 log.info("WebP ImageWriterSpi 注册成功: {}", writerSpiClass.getName());
             } catch (Exception e) {
                 log.warn("WebP ImageWriterSpi 注册失败: {}", e.getMessage());
@@ -104,6 +117,31 @@ public class StorageToolkitPlugin extends BasePlugin {
 
         } catch (Exception e) {
             log.error("WebP ImageIO SPI 注册过程出错", e);
+        }
+    }
+    
+    /**
+     * 注销 WebP ImageIO SPI
+     * 插件停止时调用，避免类加载器泄漏
+     */
+    private void unregisterWebPImageIO() {
+        if (registeredSpis.isEmpty()) {
+            return;
+        }
+        
+        try {
+            IIORegistry registry = IIORegistry.getDefaultInstance();
+            for (IIOServiceProvider spi : registeredSpis) {
+                try {
+                    registry.deregisterServiceProvider(spi);
+                    log.info("SPI 注销成功: {}", spi.getClass().getName());
+                } catch (Exception e) {
+                    log.warn("SPI 注销失败: {} - {}", spi.getClass().getName(), e.getMessage());
+                }
+            }
+            registeredSpis.clear();
+        } catch (Exception e) {
+            log.error("WebP ImageIO SPI 注销过程出错", e);
         }
     }
     

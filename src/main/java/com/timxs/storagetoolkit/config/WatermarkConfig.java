@@ -36,12 +36,12 @@ public class WatermarkConfig {
     /**
      * 字体大小（像素）
      */
-    private int fontSize = 48;
+    private int fontSize = 25;
     
     /**
      * 颜色（十六进制，如 #FFFFFF）
      */
-    private String color = "#FFFFFF";
+    private String color = "#b4b4b4";
     
     // ========== 图片水印配置 ==========
     

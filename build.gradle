@@ -4,21 +4,17 @@ plugins {
     id "run.halo.plugin.devtools" version "0.6.1"
 }
 
-group 'com.timxs.storagetoolkit'
+group = 'com.timxs.storagetoolkit'
 
 repositories {
     mavenCentral()
     // Halo snapshot 仓库 - 用于获取 2.22 测试版
-    maven { url 'https://s01.oss.sonatype.org/content/repositories/snapshots/' }
+    maven { url = 'https://s01.oss.sonatype.org/content/repositories/snapshots/' }
 }
 
 dependencies {
     implementation platform('run.halo.tools.platform:plugin:2.21.0')
     compileOnly 'run.halo.app:api'
-
-    // TwelveMonkeys ImageIO 扩展 - 支持更多图片格式
-    implementation 'com.twelvemonkeys.imageio:imageio-core:3.10.1'
-    implementation 'com.twelvemonkeys.imageio:imageio-jpeg:3.10.1'
 
     // WebP 读写支持（BSD 许可证）
     implementation 'org.sejda.imageio:webp-imageio:0.1.6'
@@ -56,6 +52,6 @@ tasks.named('classes') {
 }
 
 halo {
-    version = '2.21'
+    version = '2.22'
 }
 

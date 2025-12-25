@@ -6,6 +6,7 @@ import com.timxs.storagetoolkit.model.ImageFormat;
 import com.timxs.storagetoolkit.model.WatermarkPosition;
 import com.timxs.storagetoolkit.model.WatermarkType;
 import com.timxs.storagetoolkit.service.SettingsManager;
+import static com.timxs.storagetoolkit.service.SettingsManager.AttachmentUploadConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -91,20 +92,10 @@ public class SettingsManagerImpl implements SettingsManager {
             .doOnNext(setting -> {
                 JsonNode basic = setting.get("basic");
                 if (basic != null) {
-                    // 新的嵌套结构
-                    config.setEnabled(getBoolean(basic, "imageProcessingEnabled", true));
+                    config.setEnabled(getBoolean(basic, "imageProcessingEnabled", false));
                     config.setTargetPolicy(getString(basic, "targetPolicy", ""));
                     config.setProcessEditorImages(getBoolean(basic, "processEditorImages", false));
                     List<String> groups = getStringList(basic, "targetGroups");
-                    if (groups != null && !groups.isEmpty()) {
-                        config.setTargetGroups(groups);
-                    }
-                } else {
-                    // 兼容旧的扁平结构
-                    config.setEnabled(getBoolean(setting, "imageProcessingEnabled", true));
-                    config.setTargetPolicy(getString(setting, "targetPolicy", ""));
-                    config.setProcessEditorImages(getBoolean(setting, "processEditorImages", false));
-                    List<String> groups = getStringList(setting, "targetGroups");
                     if (groups != null && !groups.isEmpty()) {
                         config.setTargetGroups(groups);
                     }
@@ -183,8 +174,8 @@ public class SettingsManagerImpl implements SettingsManager {
                     }
                     
                     watermark.setOpacity(getInt(watermarkNode, "opacity", 50));
-                    watermark.setFontSize(getInt(watermarkNode, "fontSize", 48));
-                    watermark.setColor(getString(watermarkNode, "color", "#FFFFFF"));
+                    watermark.setFontSize(getInt(watermarkNode, "fontSize", 25));
+                    watermark.setColor(getString(watermarkNode, "color", "#b4b4b4"));
                     // 边距是百分比（0-50）
                     watermark.setMarginX(getDouble(watermarkNode, "marginX", 5));
                     watermark.setMarginY(getDouble(watermarkNode, "marginY", 5));
@@ -203,45 +194,76 @@ public class SettingsManagerImpl implements SettingsManager {
     private Mono<Boolean> getLogSettings(ProcessingConfig config) {
         return settingFetcher.get("log")
             .doOnNext(setting -> {
-                config.setLogRetentionDays(getInt(setting, "logRetentionDays", 30));
+                int days = getInt(setting, "logRetentionDays", 30);
+                config.setLogRetentionDays(Math.max(1, Math.min(30, days)));
             })
             .thenReturn(true)
             .onErrorReturn(true);
     }
 
     /**
-     * 获取文章附件存储策略
-     * 从系统配置 ConfigMap 的 post 组读取 attachmentPolicyName
-     * 用于判断编辑器上传的图片是否需要处理
+     * 获取管理端附件上传配置
+     * 从 SystemSetting.Attachment.console 读取
      *
-     * @return 存储策略名称
+     * @return 附件上传配置
      */
     @Override
-    public Mono<String> getPostAttachmentPolicy() {
+    public Mono<AttachmentUploadConfig> getConsoleAttachmentConfig() {
+        return getAttachmentConfig("console");
+    }
+
+    /**
+     * 获取个人中心附件上传配置
+     * 从 SystemSetting.Attachment.uc 读取
+     *
+     * @return 附件上传配置
+     */
+    @Override
+    public Mono<AttachmentUploadConfig> getUcAttachmentConfig() {
+        return getAttachmentConfig("uc");
+    }
+
+    /**
+     * 从系统配置读取附件上传配置
+     *
+     * @param configKey 配置键（console/uc/comment/avatar）
+     * @return 附件上传配置
+     */
+    private Mono<AttachmentUploadConfig> getAttachmentConfig(String configKey) {
         return extensionClient.fetch(ConfigMap.class, SYSTEM_CONFIG_NAME)
             .map(configMap -> {
                 Map<String, String> data = configMap.getData();
                 if (data == null) {
-                    return "";
+                    return AttachmentUploadConfig.empty();
                 }
-                // 读取 post 组的配置
-                String postConfig = data.get("post");
-                if (postConfig == null || postConfig.isBlank()) {
-                    return "";
+                // 读取 attachment 组的配置
+                String attachmentConfig = data.get("attachment");
+                if (attachmentConfig == null || attachmentConfig.isBlank()) {
+                    return AttachmentUploadConfig.empty();
                 }
-                // 解析 JSON 获取 attachmentPolicyName
+                // 解析 JSON
                 try {
-                    JsonNode postNode = OBJECT_MAPPER.readTree(postConfig);
-                    JsonNode policyNode = postNode.get("attachmentPolicyName");
-                    if (policyNode != null && policyNode.isTextual()) {
-                        return policyNode.asText();
+                    JsonNode attachmentNode = OBJECT_MAPPER.readTree(attachmentConfig);
+                    JsonNode configNode = attachmentNode.get(configKey);
+                    if (configNode != null) {
+                        String policyName = "";
+                        String groupName = "";
+                        JsonNode policyNode = configNode.get("policyName");
+                        if (policyNode != null && policyNode.isTextual()) {
+                            policyName = policyNode.asText();
+                        }
+                        JsonNode groupNode = configNode.get("groupName");
+                        if (groupNode != null && groupNode.isTextual()) {
+                            groupName = groupNode.asText();
+                        }
+                        return new AttachmentUploadConfig(policyName, groupName);
                     }
                 } catch (Exception e) {
-                    log.warn("Failed to parse post config: {}", e.getMessage());
+                    log.warn("Failed to parse attachment config: {}", e.getMessage());
                 }
-                return "";
+                return AttachmentUploadConfig.empty();
             })
-            .defaultIfEmpty("");
+            .defaultIfEmpty(AttachmentUploadConfig.empty());
     }
 
     // ========== JsonNode 辅助方法 ==========

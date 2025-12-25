@@ -76,7 +76,7 @@ public class ProcessingLog extends AbstractExtension {
         private String errorMessage;
         
         /**
-         * 上传来源：console（控制台）或 editor（编辑器）
+         * 上传来源：console-editor（控制台编辑器）、uc-editor（UC编辑器）、attachment-manager（附件管理）
          */
         private String source;
     }

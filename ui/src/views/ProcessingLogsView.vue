@@ -114,12 +114,13 @@
         </table>
 
         <!-- 分页 -->
-        <div class="pagination" v-if="total > pageSize">
+        <div class="pagination" v-if="total > 0">
           <VPagination 
-            v-model:page="page" 
+            :page="page"
+            :size="pageSize"
             :total="total" 
-            :page-size="pageSize" 
-            @change="fetchLogs" 
+            :size-options="[20, 30, 50, 100]"
+            @change="handlePaginationChange"
           />
         </div>
       </div>
@@ -217,6 +218,12 @@ const fetchStats = async () => {
 
 const handleRefresh = async () => {
   await Promise.all([fetchLogs(), fetchStats()])
+}
+
+const handlePaginationChange = ({ page: newPage, size: newSize }: { page: number; size: number }) => {
+  page.value = newPage
+  pageSize.value = newSize
+  fetchLogs()
 }
 
 const handleClearAll = () => {
@@ -319,6 +326,9 @@ const getSourceText = (source: string | undefined): string => {
   switch (source.toLowerCase()) {
     case 'console': return '控制台'
     case 'editor': return '编辑器'
+    case 'console-editor': return '控制台编辑器'
+    case 'uc-editor': return 'UC编辑器'
+    case 'attachment-manager': return '附件管理'
     default: return source
   }
 }
@@ -559,6 +569,21 @@ onMounted(() => {
 }
 
 .source-editor {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.source-console-editor {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.source-uc-editor {
+  background: #fce7f3;
+  color: #9d174d;
+}
+
+.source-attachment-manager {
   background: #d1fae5;
   color: #065f46;
 }

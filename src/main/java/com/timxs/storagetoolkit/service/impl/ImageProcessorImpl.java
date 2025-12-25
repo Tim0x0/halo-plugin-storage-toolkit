@@ -240,7 +240,7 @@ public class ImageProcessorImpl implements ImageProcessor {
                 } catch (Exception e) {
                     log.warn("格式转换失败: {}", e.getMessage());
                     errorMessages.append("格式转换失败: ").append(e.getMessage()).append("; ");
-                    // ��式转换失败时，输出原格式
+                    // 格式转换失败时，输出原格式
                     resultData = imageToBytes(image, contentType);
                 }
             } else {
@@ -329,9 +329,10 @@ public class ImageProcessorImpl implements ImageProcessor {
         String fullUrl = externalLinkProcessor.processLink(imageUrl);
         log.debug("水印图片地址: {} -> {}", imageUrl, fullUrl);
 
+        java.net.HttpURLConnection conn = null;
         try {
             java.net.URL url = java.net.URI.create(fullUrl).toURL();
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn = (java.net.HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(15000);  // 连接超时 15 秒
             conn.setReadTimeout(20000);     // 读取超时 20 秒
             conn.setRequestMethod("GET");
@@ -344,8 +345,6 @@ public class ImageProcessorImpl implements ImageProcessor {
                     log.error("水印图片加载失败，ImageIO 返回 null。URL: {}", fullUrl);
                 }
                 return img;
-            } finally {
-                conn.disconnect();
             }
         } catch (java.net.SocketTimeoutException e) {
             log.error("加载水印图片超时: {} - {}", fullUrl, e.getMessage());
@@ -353,6 +352,10 @@ public class ImageProcessorImpl implements ImageProcessor {
         } catch (Exception e) {
             log.error("从URL加载水印图片失败: {} - {}", fullUrl, e.getMessage());
             return null;
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
