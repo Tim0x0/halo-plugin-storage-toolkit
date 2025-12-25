@@ -2,9 +2,11 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/Tim0x0/halo-plugin-storage-toolkit?style=flat-square&logo=github)](https://github.com/Tim0x0/halo-plugin-storage-toolkit/releases)
 [![GitHub License](https://img.shields.io/github/license/Tim0x0/halo-plugin-storage-toolkit?style=flat-square)](https://github.com/Tim0x0/halo-plugin-storage-toolkit/blob/main/LICENSE)
-[![Halo Version](https://img.shields.io/badge/Halo-%3E%3D2.21.0-blue?style=flat-square)](https://www.halo.run)
+[![Halo Version](https://img.shields.io/badge/Halo-%3E%3D2.22.0-blue?style=flat-square)](https://www.halo.run)
 
 Halo 存储增强插件，支持图片格式转换、水印添加等功能，帮助优化网站图片加载性能。
+
+![处理日志示例](docs/doc_sample1.png)
 
 ## 功能特性
 
