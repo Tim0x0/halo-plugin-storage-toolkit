@@ -235,6 +235,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
+import { Dialog, Toast } from '@halo-dev/components'
 
 interface ReferenceSource {
   sourceType: string
@@ -398,25 +399,35 @@ const startScan = async () => {
   }
 }
 
-const clearRecords = async () => {
-  if (!confirm('确定要清空所有引用扫描记录吗？')) return
-  try {
-    await axiosInstance.delete(`${API_BASE}/clear`)
-    // 重置状态
-    stats.value = {
-      phase: null,
-      lastScanTime: null,
-      totalAttachments: 0,
-      referencedCount: 0,
-      unreferencedCount: 0,
-      unreferencedSize: 0,
-      errorMessage: null
+const clearRecords = () => {
+  Dialog.warning({
+    title: '确认清空',
+    description: '确定要清空所有引用扫描记录吗？此操作不可恢复。',
+    confirmType: 'danger',
+    confirmText: '清空',
+    cancelText: '取消',
+    async onConfirm() {
+      try {
+        await axiosInstance.delete(`${API_BASE}/clear`)
+        Toast.success('引用扫描记录已清空')
+        // 重置状态
+        stats.value = {
+          phase: null,
+          lastScanTime: null,
+          totalAttachments: 0,
+          referencedCount: 0,
+          unreferencedCount: 0,
+          unreferencedSize: 0,
+          errorMessage: null
+        }
+        attachmentList.value = []
+        total.value = 0
+      } catch (error: any) {
+        Toast.error('清空记录失败')
+        console.error('清空记录失败:', error)
+      }
     }
-    attachmentList.value = []
-    total.value = 0
-  } catch (error: any) {
-    console.error('清空记录失败:', error)
-  }
+  })
 }
 
 const pollScanStatus = () => {

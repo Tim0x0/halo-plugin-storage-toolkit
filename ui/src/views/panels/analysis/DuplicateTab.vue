@@ -127,6 +127,7 @@
 import { ref, computed, onMounted } from 'vue'
 import type { DuplicateStats, DuplicateGroup } from '@/types/duplicate'
 import { axiosInstance } from '@halo-dev/api-client'
+import { Dialog, Toast } from '@halo-dev/components'
 
 const API_PREFIX = '/apis/console.api.storage-toolkit.timxs.com/v1alpha1/duplicates'
 
@@ -194,27 +195,37 @@ const startScan = async () => {
 }
 
 // 清空记录
-const clearRecords = async () => {
-  if (!confirm('确定要清空所有重复检测记录吗？')) return
-  try {
-    await axiosInstance.delete(`${API_PREFIX}/clear`)
-    // 重置状态
-    stats.value = {
-      phase: null,
-      lastScanTime: null,
-      startTime: null,
-      totalCount: 0,
-      scannedCount: 0,
-      duplicateGroupCount: 0,
-      duplicateFileCount: 0,
-      savableSize: 0,
-      errorMessage: null
+const clearRecords = () => {
+  Dialog.warning({
+    title: '确认清空',
+    description: '确定要清空所有重复检测记录吗？此操作不可恢复。',
+    confirmType: 'danger',
+    confirmText: '清空',
+    cancelText: '取消',
+    async onConfirm() {
+      try {
+        await axiosInstance.delete(`${API_PREFIX}/clear`)
+        Toast.success('重复检测记录已清空')
+        // 重置状态
+        stats.value = {
+          phase: null,
+          lastScanTime: null,
+          startTime: null,
+          totalCount: 0,
+          scannedCount: 0,
+          duplicateGroupCount: 0,
+          duplicateFileCount: 0,
+          savableSize: 0,
+          errorMessage: null
+        }
+        duplicateGroups.value = []
+        total.value = 0
+      } catch (error: any) {
+        Toast.error('清空记录失败')
+        console.error('清空记录失败:', error)
+      }
     }
-    duplicateGroups.value = []
-    total.value = 0
-  } catch (error: any) {
-    console.error('清空记录失败:', error)
-  }
+  })
 }
 
 // 轮询扫描状态
