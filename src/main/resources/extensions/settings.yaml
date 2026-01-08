@@ -262,6 +262,7 @@ spec:
               name: text
               label: 水印文字
               value: ""
+              validation: required
             
             - $formkit: radio
               if: "$get(watermarkEnabled).value === true && $get(watermarkType).value === 'TEXT'"
@@ -314,6 +315,7 @@ spec:
               key: watermarkImageUrl
               label: 水印图片
               value: ""
+              validation: required
               accepts:
                 - image/*
               help: 上传或选择水印图片（支持 PNG、JPEG、WebP 格式）
