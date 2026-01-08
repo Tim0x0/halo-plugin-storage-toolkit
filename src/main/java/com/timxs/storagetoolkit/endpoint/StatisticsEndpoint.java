@@ -3,7 +3,6 @@ package com.timxs.storagetoolkit.endpoint;
 import com.timxs.storagetoolkit.model.StatisticsData;
 import com.timxs.storagetoolkit.service.StatisticsService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -18,7 +17,6 @@ import run.halo.app.plugin.ApiVersion;
 @RestController
 @RequestMapping("/statistics")
 @RequiredArgsConstructor
-@PreAuthorize("isAuthenticated()")
 public class StatisticsEndpoint {
 
     private final StatisticsService statisticsService;

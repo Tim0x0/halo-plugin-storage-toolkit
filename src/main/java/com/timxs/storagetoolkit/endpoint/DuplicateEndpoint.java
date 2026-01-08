@@ -5,7 +5,6 @@ import com.timxs.storagetoolkit.model.DuplicateGroupVo;
 import com.timxs.storagetoolkit.service.DuplicateService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
@@ -21,7 +20,6 @@ import java.time.Instant;
 @RestController
 @RequestMapping("/duplicates")
 @RequiredArgsConstructor
-@PreAuthorize("isAuthenticated()")
 public class DuplicateEndpoint {
 
     private final DuplicateService duplicateService;

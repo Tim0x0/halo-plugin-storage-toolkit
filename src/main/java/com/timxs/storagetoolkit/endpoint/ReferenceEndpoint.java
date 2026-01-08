@@ -7,7 +7,6 @@ import com.timxs.storagetoolkit.service.ReferenceService.ReferenceQuery;
 import com.timxs.storagetoolkit.service.ReferenceService.SubjectInfo;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
@@ -28,7 +27,6 @@ import run.halo.app.plugin.ApiVersion;
 @RestController
 @RequestMapping("/references")
 @RequiredArgsConstructor
-@PreAuthorize("isAuthenticated()")
 public class ReferenceEndpoint {
 
     private final ReferenceService referenceService;

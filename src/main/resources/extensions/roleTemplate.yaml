@@ -1,0 +1,17 @@
+apiVersion: v1alpha1
+kind: "Role"
+metadata:
+  name: role-template-storage-toolkit-manage
+  labels:
+    halo.run/role-template: "true"
+  annotations:
+    rbac.authorization.halo.run/module: "存储工具箱"
+    rbac.authorization.halo.run/display-name: "存储工具箱查看"
+    rbac.authorization.halo.run/ui-permissions: |
+      ["plugin:storage-toolkit:manage"]
+rules:
+  - apiGroups: [ "console.api.storage-toolkit.timxs.com" ]
+    resources: [ "overview", "statistics", "processinglogs", "processinglogs/stats", "references", "references/scan", "references/stats", "references/clear", "references/policy", "references/group", "references/subject", "references/settings", "duplicates", "duplicates/scan", "duplicates/stats", "duplicates/clear" ]
+    verbs: [ "*" ]
+  - nonResourceURLs: [ "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/references/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/duplicates/scan" ]
+    verbs: [ "*" ]
