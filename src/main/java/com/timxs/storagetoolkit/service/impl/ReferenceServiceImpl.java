@@ -1388,13 +1388,11 @@ public class ReferenceServiceImpl implements ReferenceService {
      */
     private Mono<ExcludeSettings> getExcludeSettings() {
         return settingFetcher.get("global")
-            .doOnNext(setting -> log.debug("全局设置: {}", setting))
             .map(setting -> {
                 Set<String> excludeGroups = new HashSet<>();
                 Set<String> excludePolicies = new HashSet<>();
                 
                 JsonNode analysis = setting.get("analysis");
-                log.debug("analysis 节点: {}", analysis);
                 if (analysis != null) {
                     JsonNode groups = analysis.get("excludeGroups");
                     if (groups != null && groups.isArray()) {
