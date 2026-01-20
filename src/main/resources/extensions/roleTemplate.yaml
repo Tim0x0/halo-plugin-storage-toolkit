@@ -11,7 +11,7 @@ metadata:
       ["plugin:storage-toolkit:manage"]
 rules:
   - apiGroups: [ "console.api.storage-toolkit.timxs.com" ]
-    resources: [ "overview", "statistics", "processinglogs", "processinglogs/stats", "references", "references/scan", "references/stats", "references/clear", "references/policy", "references/group", "references/subject", "references/settings", "duplicates", "duplicates/scan", "duplicates/stats", "duplicates/clear" ]
+    resources: [ "overview", "statistics", "processinglogs", "processinglogs/stats", "references", "references/scan", "references/stats", "references/clear", "references/policy", "references/group", "references/subject", "references/settings", "duplicates", "duplicates/scan", "duplicates/stats", "duplicates/clear", "batch-processing", "batch-processing/tasks", "batch-processing/tasks/current", "batch-processing/status", "batch-processing/check-references", "cleanup", "cleanup/duplicates", "cleanup/unreferenced", "cleanup/logs", "cleanup/preview", "broken-links", "broken-links/scan", "broken-links/status", "broken-links/source-types", "broken-links/whitelist", "whitelist", "whitelist/search", "whitelist/batch", "whitelist/check", "whitelist/all" ]
     verbs: [ "*" ]
-  - nonResourceURLs: [ "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/references/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/duplicates/scan" ]
+  - nonResourceURLs: [ "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/references/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/duplicates/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/batch-processing/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/cleanup/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/broken-links/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/whitelist/*" ]
     verbs: [ "*" ]

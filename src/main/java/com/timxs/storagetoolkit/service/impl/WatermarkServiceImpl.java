@@ -81,11 +81,12 @@ public class WatermarkServiceImpl implements WatermarkService {
                 textHeight = metrics.getHeight();
             }
             
-            // 如果字体已经最小但水印仍然太大，抛出异常让调用方知道
+            // 如果字体已经最小但水印仍然太大，记录警告并返回原图
             if ((textWidth > maxTextWidth || textHeight > maxTextHeight) && fontSize <= minFontSize) {
-                throw new IllegalStateException(String.format(
-                    "图片太小，无法添加水印: 图片尺寸 %dx%d, 水印尺寸 %dx%d",
-                    image.getWidth(), image.getHeight(), textWidth, textHeight));
+                log.warn("图片太小，跳过水印: 图片尺寸 {}x{}, 水印尺寸 {}x{}",
+                    image.getWidth(), image.getHeight(), textWidth, textHeight);
+                g2d.dispose();
+                return image; // 返回原图，不添加水印
             }
             
             log.debug("最终字体大小: {}, 模式: {}", fontSize, config.fontSizeMode());

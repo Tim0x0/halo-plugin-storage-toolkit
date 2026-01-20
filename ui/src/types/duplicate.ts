@@ -24,6 +24,8 @@ export interface DuplicateStats {
   savableSize: number
   /** 错误信息 */
   errorMessage: string | null
+  /** 是否启用远程存储扫描 */
+  enableRemoteStorage?: boolean
 }
 
 /**
@@ -44,6 +46,8 @@ export interface DuplicateFile {
   groupName: string | null
   /** 分组显示名称 */
   groupDisplayName: string | null
+  /** 存储策略名称 */
+  policyName: string | null
   /** 引用次数 */
   referenceCount: number
   /** 是否推荐保留 */

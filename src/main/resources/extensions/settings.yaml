@@ -69,9 +69,9 @@ spec:
               max: 10
               help: 同时处理的图片数量，值越大处理越快但占用内存越多（1-10）
         
-        # 附件分析
+        # 附件分析排除配置
         - $formkit: group
-          name: analysis
+          name: analysisExclude
           label: 附件分析
           children:
             - $formkit: select
@@ -394,9 +394,11 @@ spec:
     - group: analysis
       label: 附件分析
       formSchema:
+        # 引用扫描
         - $formkit: group
           name: referenceScanning
           label: 引用扫描
+          help: 引用统计和断链检测共用此配置
           children:
             - $formkit: switch
               id: scanPosts
@@ -445,7 +447,41 @@ spec:
               label: 扫描文档
               value: false
               help: 扫描 Docsme 文档插件中的附件引用（需安装 Docsme 插件）
+        
+        # 重复检测
+        - $formkit: group
+          name: duplicateScanning
+          label: 重复检测
+          children:
+            - $formkit: switch
+              name: enableRemoteStorageForDuplicateScan
+              label: 支持远程存储
+              value: false
+              help: 启用后可扫描远程存储附件的重复文件（会产生下载流量费用）
 
+    # ==================== 批量处理 ====================
+    - group: batchProcessing
+      label: 批量处理
+      formSchema:
+        - $formkit: switch
+          name: enableRemoteStorageForBatchProcessing
+          label: 支持远程存储
+          value: false
+          help: 启用后可处理远程存储的附件（会产生下载和上传流量费用，默认关闭以避免意外费用）
+
+        - $formkit: switch
+          name: keepOriginalFile
+          label: 保留原文件
+          value: false
+          help: "开启后保留原文件，处理后的新文件由系统自动命名；关闭后将删除原文件再上传。默认关闭（不保留原图）是因为批量处理的目的是替换和优化图片，保留原图会产生额外存储占用。请根据需要选择"
+
+        - $formkit: number
+          name: downloadTimeoutSeconds
+          label: 下载超时时间（秒）
+          value: 90
+          min: 30
+          max: 300
+          help: 下载远程存储文件的超时时间（30-300秒），网络较慢或文件较大时可适当增加
 
     # ==================== 日志设置 ====================
     - group: log

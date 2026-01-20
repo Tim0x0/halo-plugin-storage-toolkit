@@ -3,6 +3,7 @@ package com.timxs.storagetoolkit.endpoint;
 import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.model.DuplicateGroupVo;
 import com.timxs.storagetoolkit.service.DuplicateService;
+import com.timxs.storagetoolkit.service.SettingsManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -23,6 +24,7 @@ import java.time.Instant;
 public class DuplicateEndpoint {
 
     private final DuplicateService duplicateService;
+    private final SettingsManager settingsManager;
 
     /**
      * 触发重复检测扫描
@@ -46,8 +48,13 @@ public class DuplicateEndpoint {
      */
     @GetMapping("/stats")
     public Mono<StatsResponse> getStats() {
-        return duplicateService.getScanStatus()
-            .map(status -> {
+        return Mono.zip(
+                duplicateService.getScanStatus(),
+                settingsManager.getRemoteStorageForDuplicateScan()
+            )
+            .map(tuple -> {
+                var status = tuple.getT1();
+                boolean enableRemote = tuple.getT2();
                 var s = status.getStatus();
                 return new StatsResponse(
                     s != null ? s.getPhase() : null,
@@ -58,7 +65,8 @@ public class DuplicateEndpoint {
                     s != null ? s.getDuplicateGroupCount() : 0,
                     s != null ? s.getDuplicateFileCount() : 0,
                     s != null ? s.getSavableSize() : 0,
-                    s != null ? s.getErrorMessage() : null
+                    s != null ? s.getErrorMessage() : null,
+                    enableRemote
                 );
             });
     }
@@ -104,7 +112,8 @@ public class DuplicateEndpoint {
         int duplicateGroupCount,
         int duplicateFileCount,
         long savableSize,
-        String errorMessage
+        String errorMessage,
+        boolean enableRemoteStorage
     ) {}
 
     public record ClearResponse(String message) {}

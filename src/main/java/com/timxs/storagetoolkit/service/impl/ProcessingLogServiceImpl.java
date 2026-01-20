@@ -197,6 +197,14 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
             return false;
         }
         
+        // 来源精确匹配
+        if (query.source() != null && !query.source().isBlank()) {
+            String source = spec.getSource();
+            if (source == null || !source.equals(query.source())) {
+                return false;
+            }
+        }
+        
         // 时间范围过滤
         Instant processedAt = spec.getProcessedAt();
         if (processedAt != null) {

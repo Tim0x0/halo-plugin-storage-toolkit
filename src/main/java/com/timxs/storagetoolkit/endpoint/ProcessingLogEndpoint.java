@@ -44,6 +44,7 @@ public class ProcessingLogEndpoint {
     public Mono<ProcessingLogListResult> list(
         @RequestParam(required = false) String filename,
         @RequestParam(required = false) String status,
+        @RequestParam(required = false) String source,
         @RequestParam(required = false) String startTime,
         @RequestParam(required = false) String endTime,
         @RequestParam(defaultValue = "1") int page,
@@ -63,7 +64,7 @@ public class ProcessingLogEndpoint {
         Instant end = parseInstant(endTime);
 
         // 构建查询参数
-        ProcessingLogQuery query = new ProcessingLogQuery(filename, statusEnum, start, end, page, size);
+        ProcessingLogQuery query = new ProcessingLogQuery(filename, statusEnum, source, start, end, page, size);
 
         // 并行查询列表和总数
         return Mono.zip(
@@ -88,7 +89,7 @@ public class ProcessingLogEndpoint {
     @GetMapping("/stats")
     public Mono<ProcessingStats> stats() {
         // 使用流式处理避免一次性加载所有数据到内存
-        return processingLogService.list(new ProcessingLogQuery(null, null, null, null, 1, Integer.MAX_VALUE))
+        return processingLogService.list(new ProcessingLogQuery(null, null, null, null, null, 1, Integer.MAX_VALUE))
             .reduce(new ProcessingStats(), (stats, log) -> {
                 stats.setTotalProcessed(stats.getTotalProcessed() + 1);
                 

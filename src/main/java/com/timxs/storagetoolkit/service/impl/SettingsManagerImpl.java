@@ -17,8 +17,10 @@ import run.halo.app.extension.ReactiveExtensionClient;
 import run.halo.app.plugin.ReactiveSettingFetcher;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 配置管理器实现
@@ -295,6 +297,111 @@ public class SettingsManagerImpl implements SettingsManager {
                 return AttachmentUploadConfig.empty();
             })
             .defaultIfEmpty(AttachmentUploadConfig.empty());
+    }
+
+    /**
+     * 获取重复扫描是否支持远程存储
+     */
+    @Override
+    public Mono<Boolean> getRemoteStorageForDuplicateScan() {
+        return settingFetcher.get("analysis")
+            .map(setting -> {
+                JsonNode duplicateScanning = setting.get("duplicateScanning");
+                if (duplicateScanning != null) {
+                    return getBoolean(duplicateScanning, "enableRemoteStorageForDuplicateScan", false);
+                }
+                return false;
+            })
+            .defaultIfEmpty(false)
+            .onErrorReturn(false);
+    }
+
+    /**
+     * 获取批量处理是否支持远程存储
+     */
+    @Override
+    public Mono<Boolean> getRemoteStorageForBatchProcessing() {
+        return settingFetcher.get("batchProcessing")
+            .map(setting -> getBoolean(setting, "enableRemoteStorageForBatchProcessing", false))
+            .defaultIfEmpty(false)
+            .onErrorReturn(false);
+    }
+
+    /**
+     * 获取批量处理是否保留原文件
+     */
+    @Override
+    public Mono<Boolean> getKeepOriginalFile() {
+        return settingFetcher.get("batchProcessing")
+            .map(setting -> getBoolean(setting, "keepOriginalFile", false))
+            .defaultIfEmpty(false)
+            .onErrorReturn(false);
+    }
+
+    /**
+     * 获取批量处理下载超时时间（秒）
+     */
+    @Override
+    public Mono<Integer> getDownloadTimeoutSeconds() {
+        return settingFetcher.get("batchProcessing")
+            .map(setting -> {
+                int timeout = getInt(setting, "downloadTimeoutSeconds", 90);
+                return Math.max(30, Math.min(300, timeout));
+            })
+            .defaultIfEmpty(90)
+            .onErrorReturn(90);
+    }
+
+    @Override
+    public Mono<AnalysisSettings> getAnalysisSettings() {
+        return settingFetcher.get("analysis")
+            .map(setting -> {
+                JsonNode refScanning = setting.get("referenceScanning");
+                if (refScanning != null) {
+                    return new AnalysisSettings(
+                        getBoolean(refScanning, "scanPosts", true),
+                        getBoolean(refScanning, "scanPages", true),
+                        getBoolean(refScanning, "scanComments", false),
+                        getBoolean(refScanning, "scanMoments", false),
+                        getBoolean(refScanning, "scanPhotos", false),
+                        getBoolean(refScanning, "scanDocs", false)
+                    );
+                }
+                return AnalysisSettings.defaultSettings();
+            })
+            .defaultIfEmpty(AnalysisSettings.defaultSettings())
+            .onErrorReturn(AnalysisSettings.defaultSettings());
+    }
+
+    @Override
+    public Mono<ExcludeSettings> getExcludeSettings() {
+        return settingFetcher.get("global")
+            .map(setting -> {
+                java.util.Set<String> excludeGroups = new java.util.HashSet<>();
+                java.util.Set<String> excludePolicies = new java.util.HashSet<>();
+                int scanTimeoutMinutes = 5;
+                int duplicateScanConcurrency = 4;
+
+                JsonNode analysisExclude = setting.get("analysisExclude");
+                if (analysisExclude != null) {
+                    List<String> groups = getStringList(analysisExclude, "excludeGroups");
+                    if (groups != null) excludeGroups.addAll(groups);
+
+                    List<String> policies = getStringList(analysisExclude, "excludePolicies");
+                    if (policies != null) excludePolicies.addAll(policies);
+
+                    // 添加范围校验：超时时间 1-60 分钟
+                    int timeout = getInt(analysisExclude, "scanTimeoutMinutes", 5);
+                    scanTimeoutMinutes = Math.max(1, Math.min(60, timeout));
+
+                    // 添加范围校验：并发数 1-10
+                    int concurrency = getInt(analysisExclude, "duplicateScanConcurrency", 4);
+                    duplicateScanConcurrency = Math.max(1, Math.min(10, concurrency));
+                }
+                return new ExcludeSettings(excludeGroups, excludePolicies, scanTimeoutMinutes, duplicateScanConcurrency);
+            })
+            .defaultIfEmpty(ExcludeSettings.defaultSettings())
+            .onErrorReturn(ExcludeSettings.defaultSettings());
     }
 
     // ========== JsonNode 辅助方法 ==========

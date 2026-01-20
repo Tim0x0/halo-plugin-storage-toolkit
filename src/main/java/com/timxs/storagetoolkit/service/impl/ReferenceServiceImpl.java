@@ -5,10 +5,14 @@ import run.halo.app.infra.utils.JsonUtils;
 import run.halo.app.infra.ExternalLinkProcessor;
 import com.timxs.storagetoolkit.extension.AttachmentReference;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
+import com.timxs.storagetoolkit.model.CleanupResult;
 import com.timxs.storagetoolkit.service.ContentScanner;
 import com.timxs.storagetoolkit.service.ReferenceService;
+import com.timxs.storagetoolkit.service.SettingsManager;
+import com.timxs.storagetoolkit.service.WhitelistService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -33,10 +37,12 @@ import run.halo.app.extension.Metadata;
 import run.halo.app.extension.PageRequestImpl;
 import run.halo.app.extension.ReactiveExtensionClient;
 import run.halo.app.extension.SchemeManager;
-import run.halo.app.plugin.ReactiveSettingFetcher;
 import org.springframework.data.domain.Sort;
 
 import static run.halo.app.extension.index.query.Queries.equal;
+
+import com.timxs.storagetoolkit.extension.BrokenLink;
+import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -56,10 +62,11 @@ public class ReferenceServiceImpl implements ReferenceService {
 
     private final ReactiveExtensionClient client;
     private final ContentScanner contentScanner;
-    private final ReactiveSettingFetcher settingFetcher;
+    private final SettingsManager settingsManager;
     private final PostContentService postContentService;
     private final SchemeManager schemeManager;
     private final ExternalLinkProcessor externalLinkProcessor;
+    private final WhitelistService whitelistService;
 
     private static final com.fasterxml.jackson.databind.ObjectMapper objectMapper = JsonUtils.mapper();
 
@@ -86,10 +93,11 @@ public class ReferenceServiceImpl implements ReferenceService {
         return getScanStatus()
             .flatMap(status -> {
                 // 检查是否正在扫描
-                if (status.getStatus() != null 
+                if (status.getStatus() != null
                     && ReferenceScanStatus.Phase.SCANNING.equals(status.getStatus().getPhase())) {
                     // 检查是否超时
-                    return getScanTimeoutMinutes()
+                    return settingsManager.getExcludeSettings()
+                        .map(SettingsManager.ExcludeSettings::scanTimeoutMinutes)
                         .flatMap(timeout -> {
                             if (!isStuck(status.getStatus().getStartTime(), timeout)) {
                                 return Mono.error(new IllegalStateException("扫描正在进行中"));
@@ -146,11 +154,11 @@ public class ReferenceServiceImpl implements ReferenceService {
 
         // 先标记所有现有记录为待删除，然后提交删除
         return markAllAsPendingDeleteAndDelete()
-            .then(getAnalysisSettings())
+            .then(settingsManager.getAnalysisSettings())
             .flatMap(settings -> {
                 // 根据配置决定扫描哪些内容
                 List<Mono<Void>> scanTasks = new ArrayList<>();
-                
+
                 if (settings.scanPosts()) {
                     scanTasks.add(scanPosts(fullUrlToSources, relativePathToSources));
                 }
@@ -175,7 +183,8 @@ public class ReferenceServiceImpl implements ReferenceService {
                 // 用户头像始终扫描
                 scanTasks.add(scanUserAvatars(fullUrlToSources, relativePathToSources));
 
-                return Flux.merge(scanTasks).then();
+                // 顺序执行所有扫描任务
+                return Flux.concat(scanTasks).then();
             })
             .then(Mono.defer(() -> {
                 log.info("内容扫描完成，完整URL: {} 个, 相对路径: {} 个", 
@@ -193,7 +202,8 @@ public class ReferenceServiceImpl implements ReferenceService {
      * 标记所有现有记录为待删除，然后提交删除
      */
     private Mono<Void> markAllAsPendingDeleteAndDelete() {
-        return client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
+        // 删除旧的引用记录
+        Mono<Void> deleteReferences = client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
             .flatMap(ref -> {
                 if (ref.getStatus() == null) {
                     ref.setStatus(new AttachmentReference.AttachmentReferenceStatus());
@@ -203,7 +213,22 @@ public class ReferenceServiceImpl implements ReferenceService {
                     .flatMap(updated -> client.delete(updated));
             })
             .then()
-            .doOnSuccess(v -> log.info("已标记并删除所有旧引用记录"));
+            .doOnSuccess(v -> log.info("已删除所有旧引用记录"));
+
+        // 删除旧的断链记录
+        Mono<Void> deleteBrokenLinks = client.listAll(BrokenLink.class, ListOptions.builder().build(), Sort.unsorted())
+            .flatMap(link -> {
+                if (link.getStatus() == null) {
+                    link.setStatus(new BrokenLink.BrokenLinkStatus());
+                }
+                link.getStatus().setPendingDelete(true);
+                return client.update(link)
+                    .flatMap(updated -> client.delete(updated));
+            })
+            .then()
+            .doOnSuccess(v -> log.info("已删除所有旧断链记录"));
+
+        return Mono.when(deleteReferences, deleteBrokenLinks);
     }
 
     /**
@@ -232,17 +257,11 @@ public class ReferenceServiceImpl implements ReferenceService {
                     .doOnNext(contentWrapper -> {
                         AttachmentReference.ReferenceSource contentSource = createSource(
                             "Post", postName, postTitle, postUrl, isDeleted, "content");
-                        
-                        // 扫描原始内容
-                        String rawContent = contentWrapper.getRaw();
-                        if (StringUtils.hasText(rawContent)) {
-                            addExtractedUrls(fullUrlToSources, relativePathToSources, rawContent, contentSource);
-                        }
-                        
-                        // 扫描渲染内容
+
+                        // 扫描渲染后的 HTML 内容（使用 Jsoup 解析）
                         String htmlContent = contentWrapper.getContent();
                         if (StringUtils.hasText(htmlContent)) {
-                            addExtractedUrls(fullUrlToSources, relativePathToSources, htmlContent, contentSource);
+                            addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, contentSource);
                         }
                     })
                     .onErrorResume(e -> {
@@ -283,17 +302,11 @@ public class ReferenceServiceImpl implements ReferenceService {
                     .doOnNext(contentWrapper -> {
                         AttachmentReference.ReferenceSource contentSource = createSource(
                             "SinglePage", pageName, pageTitle, pageUrl, isDeleted, "content");
-                        
-                        // 扫描原始内容
-                        String rawContent = contentWrapper.getRaw();
-                        if (StringUtils.hasText(rawContent)) {
-                            addExtractedUrls(fullUrlToSources, relativePathToSources, rawContent, contentSource);
-                        }
-                        
-                        // 扫描渲染内容
+
+                        // 扫描渲染后的 HTML 内容（使用 Jsoup 解析）
                         String htmlContent = contentWrapper.getContent();
                         if (StringUtils.hasText(htmlContent)) {
-                            addExtractedUrls(fullUrlToSources, relativePathToSources, htmlContent, contentSource);
+                            addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, contentSource);
                         }
                     })
                     .onErrorResume(e -> {
@@ -330,7 +343,8 @@ public class ReferenceServiceImpl implements ReferenceService {
         return client.listAll(Comment.class, ListOptions.builder().build(), Sort.unsorted())
             .doOnNext(comment -> {
                 String commentName = comment.getMetadata().getName();
-                String content = comment.getSpec().getRaw();
+                // 使用 getContent() 获取渲染后的 HTML 内容
+                String content = comment.getSpec().getContent();
 
                 if (!StringUtils.hasText(content)) {
                     return;
@@ -342,10 +356,10 @@ public class ReferenceServiceImpl implements ReferenceService {
                 if (subjectRef != null) {
                     sourceTitle = subjectRef.getKind() + ":" + subjectRef.getName();
                 }
-                
+
                 AttachmentReference.ReferenceSource source = createSource(
                     "Comment", commentName, sourceTitle, null, false, "comment");
-                addExtractedUrls(fullUrlToSources, relativePathToSources, content, source);
+                addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, content, source);
             })
             .then();
     }
@@ -358,7 +372,8 @@ public class ReferenceServiceImpl implements ReferenceService {
         return client.listAll(Reply.class, ListOptions.builder().build(), Sort.unsorted())
             .doOnNext(reply -> {
                 String replyName = reply.getMetadata().getName();
-                String content = reply.getSpec().getRaw();
+                // 使用 getContent() 获取渲染后的 HTML 内容
+                String content = reply.getSpec().getContent();
 
                 if (!StringUtils.hasText(content)) {
                     return;
@@ -366,13 +381,13 @@ public class ReferenceServiceImpl implements ReferenceService {
 
                 // 存储 Comment:comment-name 格式，详情弹窗再追溯查询
                 String commentName = reply.getSpec().getCommentName();
-                String sourceTitle = StringUtils.hasText(commentName) 
-                    ? "Comment:" + commentName 
+                String sourceTitle = StringUtils.hasText(commentName)
+                    ? "Comment:" + commentName
                     : "回复";
-                
+
                 AttachmentReference.ReferenceSource source = createSource(
                     "Reply", replyName, sourceTitle, null, false, "reply");
-                addExtractedUrls(fullUrlToSources, relativePathToSources, content, source);
+                addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, content, source);
             })
             .then();
     }
@@ -438,7 +453,7 @@ public class ReferenceServiceImpl implements ReferenceService {
             })
             .then();
 
-        return Flux.merge(scanSystem, scanPlugins, scanThemes).then();
+        return scanSystem.then(scanPlugins).then(scanThemes);
     }
 
     /**
@@ -520,6 +535,7 @@ public class ReferenceServiceImpl implements ReferenceService {
 
     /**
      * 扫描瞬间（Moment 插件）
+     * 提取 spec.content.html（HTML 内容）和 spec.content.medium（媒体文件）
      */
     private Mono<Void> scanMoments(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
                                     Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
@@ -528,7 +544,7 @@ public class ReferenceServiceImpl implements ReferenceService {
             log.info("瞬间插件未安装（GVK: {}），跳过扫描", MOMENT_GVK);
             return Mono.empty();
         }
-        
+
         log.info("开始扫描瞬间，GVK: {}", MOMENT_GVK);
         return client.listAll(schemeOpt.get().type(), ListOptions.builder().build(), Sort.unsorted())
             .doOnNext(ext -> {
@@ -536,9 +552,34 @@ public class ReferenceServiceImpl implements ReferenceService {
                     String momentName = ext.getMetadata().getName();
                     String sourceUrl = "/moments/" + momentName;
                     String json = objectMapper.writeValueAsString(ext);
-                    AttachmentReference.ReferenceSource source = createSource(
-                        "Moment", momentName, "瞬间", sourceUrl, false, "content");
-                    addExtractedUrls(fullUrlToSources, relativePathToSources, json, source);
+                    JsonNode rootNode = objectMapper.readTree(json);
+                    JsonNode specNode = rootNode.get("spec");
+
+                    if (specNode != null) {
+                        JsonNode contentNode = specNode.get("content");
+                        if (contentNode != null) {
+                            // 提取 HTML 内容
+                            String htmlContent = contentNode.has("html") ? contentNode.get("html").asText(null) : null;
+                            if (StringUtils.hasText(htmlContent)) {
+                                AttachmentReference.ReferenceSource htmlSource = createSource(
+                                    "Moment", momentName, "瞬间", sourceUrl, false, "content");
+                                addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, htmlSource);
+                            }
+
+                            // 提取媒体文件 URL
+                            JsonNode mediumNode = contentNode.get("medium");
+                            if (mediumNode != null && mediumNode.isArray()) {
+                                for (JsonNode mediaItem : mediumNode) {
+                                    String mediaUrl = mediaItem.has("url") ? mediaItem.get("url").asText(null) : null;
+                                    if (StringUtils.hasText(mediaUrl)) {
+                                        AttachmentReference.ReferenceSource mediaSource = createSource(
+                                            "Moment", momentName, "瞬间", sourceUrl, false, "media");
+                                        addUrlSourceWithType(fullUrlToSources, relativePathToSources, mediaUrl, mediaSource);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } catch (Exception e) {
                     log.warn("扫描瞬间失败: {}", e.getMessage());
                 }
@@ -655,15 +696,10 @@ public class ReferenceServiceImpl implements ReferenceService {
                                         .map(headSnapshot -> ContentWrapper.patchSnapshot(headSnapshot, baseSnapshot));
                                 })
                                 .doOnNext(contentWrapper -> {
-                                    // 扫描原始内容
-                                    String rawContent = contentWrapper.getRaw();
-                                    if (StringUtils.hasText(rawContent)) {
-                                        addExtractedUrls(fullUrlToSources, relativePathToSources, rawContent, source);
-                                    }
-                                    // 扫描渲染内容
+                                    // 扫描渲染后的 HTML 内容（使用 Jsoup 解析）
                                     String htmlContent = contentWrapper.getContent();
                                     if (StringUtils.hasText(htmlContent)) {
-                                        addExtractedUrls(fullUrlToSources, relativePathToSources, htmlContent, source);
+                                        addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, source);
                                     }
                                 })
                                 .onErrorResume(e -> {
@@ -717,8 +753,8 @@ public class ReferenceServiceImpl implements ReferenceService {
                 .then();
         }
         
-        return Flux.merge(scanDocContent, scanProjectIcon)
-            .then()
+        return scanDocContent
+            .then(scanProjectIcon)
             .onErrorResume(e -> {
                 log.warn("文档扫描出错: {}", e.getMessage());
                 return Mono.empty();
@@ -752,7 +788,7 @@ public class ReferenceServiceImpl implements ReferenceService {
     }
 
     /**
-     * 从内容中提取 URL 并分类添加到对应的 Map
+     * 从内容中提取 URL 并分类添加到对应的 Map（用于非 HTML 内容）
      */
     private void addExtractedUrls(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
                                    Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
@@ -763,7 +799,22 @@ public class ReferenceServiceImpl implements ReferenceService {
     }
 
     /**
+     * 从 HTML 内容中提取 URL 并分类添加到对应的 Map（使用 Jsoup 解析）
+     */
+    private void addExtractedUrlsFromHtml(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
+                                           Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
+                                           String htmlContent, AttachmentReference.ReferenceSource source) {
+        ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
+        result.fullUrls().forEach(url -> addUrlSource(fullUrlToSources, url, source));
+        result.relativePaths().forEach(path -> addUrlSource(relativePathToSources, path, source));
+    }
+
+    /**
      * 添加单个 URL 到引用源映射（根据类型分类）
+     *
+     * 处理逻辑：
+     * 1. 完整 URL（http/https）-> 直接存入 fullUrlToSources
+     * 2. 相对路径 -> 拼接成完整 URL 后存入 fullUrlToSources，同时存入 relativePathToSources 作为备用匹配
      */
     private void addUrlSourceWithType(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
                                        Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
@@ -772,10 +823,46 @@ public class ReferenceServiceImpl implements ReferenceService {
             return;
         }
         if (contentScanner.isFullUrl(url)) {
+            // 完整 URL 直接存入
             fullUrlToSources.computeIfAbsent(url, k -> ConcurrentHashMap.newKeySet()).add(source);
-        } else if (url.startsWith("/")) {
-            relativePathToSources.computeIfAbsent(url, k -> ConcurrentHashMap.newKeySet()).add(source);
+        } else {
+            // 相对路径：规范化后存入 relativePathToSources
+            String normalizedPath = normalizePath(url);
+            if (StringUtils.hasText(normalizedPath)) {
+                relativePathToSources.computeIfAbsent(normalizedPath, k -> ConcurrentHashMap.newKeySet()).add(source);
+                // 同时拼接成完整 URL 存入 fullUrlToSources
+                String fullUrl = externalLinkProcessor.processLink(normalizedPath);
+                if (StringUtils.hasText(fullUrl) && contentScanner.isFullUrl(fullUrl)) {
+                    fullUrlToSources.computeIfAbsent(fullUrl, k -> ConcurrentHashMap.newKeySet()).add(source);
+                }
+            }
         }
+    }
+
+    /**
+     * 规范化相对路径
+     * - /upload/image.jpg -> /upload/image.jpg（不变）
+     * - upload/image.jpg -> /upload/image.jpg（补 /）
+     * - ./upload/image.jpg -> /upload/image.jpg（去 ./）
+     * - ../upload/image.jpg -> null（无法处理，忽略）
+     */
+    private String normalizePath(String path) {
+        if (!StringUtils.hasText(path)) {
+            return null;
+        }
+        // 去除 ./ 前缀
+        if (path.startsWith("./")) {
+            path = path.substring(2);
+        }
+        // 无法处理 ../ 开头的路径
+        if (path.startsWith("../")) {
+            return null;
+        }
+        // 补 / 前缀
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+        return path;
     }
 
     /**
@@ -791,25 +878,32 @@ public class ReferenceServiceImpl implements ReferenceService {
 
     /**
      * 匹配附件并创建新的引用关系
-     * 
+     *
      * 匹配逻辑：
      * 1. 完整 URL：精确匹配附件的 permalink
      * 2. 相对路径：匹配附件 permalink 的路径部分（仅限本地附件）
+     *
+     * 同时检测断链：提取到的 URL 中未匹配到任何附件的即为断链
      */
     private Mono<ReferenceScanStatus> matchAndCreateReferences(
             Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
             Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
             ReferenceScanStatus status,
             long scanTimestamp) {
-        
-        log.info("提取到的完整URL: {}, 相对路径: {}", fullUrlToSources.keySet(), relativePathToSources.keySet());
-        
+
+        log.info("提取到的完整URL: {} 个, 相对路径: {} 个", fullUrlToSources.size(), relativePathToSources.size());
+
         final AtomicInteger totalCount = new AtomicInteger(0);
         final AtomicInteger referencedCount = new AtomicInteger(0);
         final AtomicLong unreferencedSize = new AtomicLong(0);
+        final AtomicInteger brokenLinkCount = new AtomicInteger(0);
 
-        return getExcludeSettings()
-            .flatMapMany(excludeSettings -> 
+        // 用于记录被成功匹配的 URL（用于断链检测）
+        final Set<String> matchedFullUrls = ConcurrentHashMap.newKeySet();
+        final Set<String> matchedRelativePaths = ConcurrentHashMap.newKeySet();
+
+        return settingsManager.getExcludeSettings()
+            .flatMapMany(excludeSettings ->
                 client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted())
                     .filter(attachment -> {
                         // 过滤排除的分组
@@ -836,26 +930,29 @@ public class ReferenceServiceImpl implements ReferenceService {
                 if (StringUtils.hasText(permalink)) {
                     // 对 permalink 进行 URL 解码后匹配
                     String decodedPermalink = decodeUrl(permalink);
-                    
+
                     // 1. 完整 URL 精确匹配（permalink 本身是完整 URL）
                     if (fullUrlToSources.containsKey(decodedPermalink)) {
                         sources.addAll(fullUrlToSources.get(decodedPermalink));
+                        matchedFullUrls.add(decodedPermalink);
                         log.debug("附件 {} 完整URL匹配成功: {}", attachmentName, decodedPermalink);
                     }
-                    
+
                     // 2. 如果 permalink 是相对路径，拼成完整 URL 再匹配
                     if (!contentScanner.isFullUrl(decodedPermalink)) {
                         String fullPermalink = externalLinkProcessor.processLink(decodedPermalink);
                         if (fullUrlToSources.containsKey(fullPermalink)) {
                             sources.addAll(fullUrlToSources.get(fullPermalink));
+                            matchedFullUrls.add(fullPermalink);
                             log.debug("附件 {} 拼接完整URL匹配成功: {} -> {}", attachmentName, decodedPermalink, fullPermalink);
                         }
                     }
-                    
+
                     // 3. 相对路径匹配（提取 permalink 的路径部分）
                     String permalinkPath = contentScanner.extractPath(decodedPermalink);
                     if (relativePathToSources.containsKey(permalinkPath)) {
                         sources.addAll(relativePathToSources.get(permalinkPath));
+                        matchedRelativePaths.add(permalinkPath);
                         log.debug("附件 {} 相对路径匹配成功: {}", attachmentName, permalinkPath);
                     }
                 }
@@ -869,11 +966,48 @@ public class ReferenceServiceImpl implements ReferenceService {
                 return createAttachmentReference(attachmentName, sources, scanTimestamp);
             })
             .then(Mono.defer(() -> {
+                // 附件遍历完成后，在同一个流程中创建断链记录
+                // 未匹配的 URL 即为断链（需要先获取白名单进行过滤）
+                return getBrokenLinkWhitelist()
+                    .flatMap(whitelist -> {
+                        Instant now = Instant.now();
+                        List<Mono<BrokenLink>> brokenLinkTasks = new ArrayList<>();
+
+                        // 检查完整 URL 中未匹配的
+                        for (Map.Entry<String, Set<AttachmentReference.ReferenceSource>> entry : fullUrlToSources.entrySet()) {
+                            String url = entry.getKey();
+                            if (!matchedFullUrls.contains(url) && !isInWhitelist(url, whitelist)) {
+                                Set<AttachmentReference.ReferenceSource> sources = entry.getValue();
+                                // 每个 URL 创建一条断链记录，包含所有引用源
+                                brokenLinkTasks.add(createBrokenLinkRecord(url, sources, now, scanTimestamp));
+                                brokenLinkCount.incrementAndGet();
+                            }
+                        }
+
+                        // 检查相对路径中未匹配的
+                        for (Map.Entry<String, Set<AttachmentReference.ReferenceSource>> entry : relativePathToSources.entrySet()) {
+                            String path = entry.getKey();
+                            if (!matchedRelativePaths.contains(path) && !isInWhitelist(path, whitelist)) {
+                                Set<AttachmentReference.ReferenceSource> sources = entry.getValue();
+                                // 每个 URL 创建一条断链记录，包含所有引用源
+                                brokenLinkTasks.add(createBrokenLinkRecord(path, sources, now, scanTimestamp));
+                                brokenLinkCount.incrementAndGet();
+                            }
+                        }
+
+                        log.info("断链检测完成，发现 {} 个断链（已过滤白名单 {} 条）", brokenLinkCount.get(), whitelist.size());
+
+                        // 顺序创建所有断链记录
+                        return Flux.fromIterable(brokenLinkTasks).concatMap(task -> task).then();
+                    });
+            }))
+            .then(Mono.defer(() -> {
                 int total = totalCount.get();
                 int referenced = referencedCount.get();
                 long unrefSize = unreferencedSize.get();
-                
-                // 更新扫描状态
+                int brokenCount = brokenLinkCount.get();
+
+                // 更新引用扫描状态
                 status.getStatus().setPhase(ReferenceScanStatus.Phase.COMPLETED);
                 status.getStatus().setLastScanTime(Instant.now());
                 status.getStatus().setTotalAttachments(total);
@@ -882,11 +1016,86 @@ public class ReferenceServiceImpl implements ReferenceService {
                 status.getStatus().setUnreferencedSize(unrefSize);
                 status.getStatus().setErrorMessage(null);
 
-                log.info("扫描完成 - 总附件: {}, 已引用: {}, 未引用: {}, 未引用占用: {} bytes",
-                    total, referenced, total - referenced, unrefSize);
+                log.info("扫描完成 - 总附件: {}, 已引用: {}, 未引用: {}, 断链: {}",
+                    total, referenced, total - referenced, brokenCount);
 
                 return client.update(status);
-            }));
+            }))
+            // 更新断链扫描状态（确保完成后再返回）
+            .flatMap(updatedStatus ->
+                updateBrokenLinkScanStatus(
+                    fullUrlToSources.size() + relativePathToSources.size(),
+                    brokenLinkCount.get()
+                ).then(Mono.just(updatedStatus))
+            );
+    }
+
+    /**
+     * 创建断链记录（每个 URL 一条记录，包含所有引用源）
+     */
+    private Mono<BrokenLink> createBrokenLinkRecord(String url,
+            Set<AttachmentReference.ReferenceSource> sources, Instant discoveredAt, long scanTimestamp) {
+
+        // 使用时间戳和计数器作为名称，与引用记录逻辑一致
+        String linkName = "broken-link-" + scanTimestamp + "-" + System.nanoTime();
+
+        BrokenLink brokenLink = new BrokenLink();
+        brokenLink.setMetadata(new Metadata());
+        brokenLink.getMetadata().setName(linkName);
+
+        BrokenLink.BrokenLinkSpec spec = new BrokenLink.BrokenLinkSpec();
+        spec.setUrl(url);
+        brokenLink.setSpec(spec);
+
+        BrokenLink.BrokenLinkStatus status = new BrokenLink.BrokenLinkStatus();
+        status.setSourceCount(sources.size());
+        status.setDiscoveredAt(discoveredAt);
+
+        // 转换引用源列表
+        List<BrokenLink.BrokenLinkSource> brokenLinkSources = sources.stream()
+            .map(source -> {
+                BrokenLink.BrokenLinkSource blSource = new BrokenLink.BrokenLinkSource();
+                blSource.setSourceType(source.getSourceType());
+                blSource.setSourceName(source.getSourceName());
+                blSource.setSourceTitle(source.getSourceTitle());
+                blSource.setSourceUrl(source.getSourceUrl());
+                blSource.setDeleted(source.getDeleted());
+                blSource.setReferenceType(source.getReferenceType());
+                blSource.setSettingName(source.getSettingName());
+                return blSource;
+            })
+            .toList();
+
+        status.setSources(brokenLinkSources);
+        brokenLink.setStatus(status);
+
+        return client.create(brokenLink);
+    }
+
+    /**
+     * 更新断链扫描状态
+     */
+    private Mono<Void> updateBrokenLinkScanStatus(int checkedLinkCount, int brokenLinkCount) {
+        return client.fetch(BrokenLinkScanStatus.class, BrokenLinkScanStatus.SINGLETON_NAME)
+            .switchIfEmpty(Mono.defer(() -> {
+                BrokenLinkScanStatus status = new BrokenLinkScanStatus();
+                status.setMetadata(new Metadata());
+                status.getMetadata().setName(BrokenLinkScanStatus.SINGLETON_NAME);
+                status.setStatus(new BrokenLinkScanStatus.BrokenLinkScanStatusStatus());
+                return client.create(status);
+            }))
+            .flatMap(status -> {
+                if (status.getStatus() == null) {
+                    status.setStatus(new BrokenLinkScanStatus.BrokenLinkScanStatusStatus());
+                }
+                status.getStatus().setPhase(BrokenLinkScanStatus.Phase.COMPLETED);
+                status.getStatus().setLastScanTime(Instant.now());
+                status.getStatus().setCheckedLinkCount(checkedLinkCount);
+                status.getStatus().setBrokenLinkCount(brokenLinkCount);
+                status.getStatus().setErrorMessage(null);
+                return client.update(status);
+            })
+            .then();
     }
 
     /**
@@ -925,6 +1134,41 @@ public class ReferenceServiceImpl implements ReferenceService {
         return client.update(status);
     }
 
+    /**
+     * 获取断链忽略白名单（包含 URL 和匹配模式）
+     */
+    private Mono<List<WhitelistService.WhitelistItem>> getBrokenLinkWhitelist() {
+        return whitelistService.list()
+            .collectList()
+            .doOnSuccess(whitelist -> log.info("断链白名单读取完成: {} 条", whitelist.size()));
+    }
+
+    /**
+     * 检查 URL 是否在白名单中
+     * 根据白名单条目的 matchMode 决定使用精确匹配还是前缀匹配
+     */
+    private boolean isInWhitelist(String url, List<WhitelistService.WhitelistItem> whitelist) {
+        if (!StringUtils.hasText(url) || whitelist == null || whitelist.isEmpty()) {
+            return false;
+        }
+        for (WhitelistService.WhitelistItem item : whitelist) {
+            String pattern = item.url();
+            String matchMode = item.matchMode();
+
+            // 精确匹配
+            if ("exact".equals(matchMode)) {
+                if (url.equals(pattern)) {
+                    return true;
+                }
+            }
+            // 前缀匹配（prefix 或默认）
+            else if (url.startsWith(pattern)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public Mono<ReferenceScanStatus> getScanStatus() {
         return client.fetch(ReferenceScanStatus.class, ReferenceScanStatus.SINGLETON_NAME)
@@ -954,12 +1198,12 @@ public class ReferenceServiceImpl implements ReferenceService {
         return Mono.zip(
             client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted()).collectList(),
             refMapMono,
-            getExcludeSettings()
+            settingsManager.getExcludeSettings()
         ).map(tuple -> {
             List<Attachment> attachments = tuple.getT1();
             Map<String, AttachmentReference> refMap = tuple.getT2();
-            ExcludeSettings excludeSettings = tuple.getT3();
-            
+            SettingsManager.ExcludeSettings excludeSettings = tuple.getT3();
+
             // 构建 VO 列表（排除被过滤的附件）
             List<AttachmentReferenceVo> list = attachments.stream()
                 .filter(attachment -> {
@@ -1312,61 +1556,6 @@ public class ReferenceServiceImpl implements ReferenceService {
     }
 
     /**
-     * 获取扫描超时时间配置（从 global.analysis.scanTimeoutMinutes 读取）
-     */
-    private Mono<Integer> getScanTimeoutMinutes() {
-        return settingFetcher.get("global")
-            .map(setting -> {
-                JsonNode analysis = setting.get("analysis");
-                if (analysis != null) {
-                    JsonNode timeout = analysis.get("scanTimeoutMinutes");
-                    if (timeout != null) {
-                        if (timeout.isNumber()) {
-                            return timeout.asInt();
-                        } else if (timeout.isTextual()) {
-                            try {
-                                return Integer.parseInt(timeout.asText());
-                            } catch (NumberFormatException e) {
-                                // ignore
-                            }
-                        }
-                    }
-                }
-                return DEFAULT_SCAN_TIMEOUT_MINUTES;
-            })
-            .defaultIfEmpty(DEFAULT_SCAN_TIMEOUT_MINUTES);
-    }
-
-    /**
-     * 获取分析设置
-     */
-    private Mono<AnalysisSettings> getAnalysisSettings() {
-        return settingFetcher.get("analysis")
-            .map(setting -> {
-                JsonNode refScanning = setting.get("referenceScanning");
-                if (refScanning != null) {
-                    boolean scanPosts = getBooleanValue(refScanning, "scanPosts", true);
-                    boolean scanPages = getBooleanValue(refScanning, "scanPages", true);
-                    boolean scanComments = getBooleanValue(refScanning, "scanComments", false);
-                    boolean scanMoments = getBooleanValue(refScanning, "scanMoments", false);
-                    boolean scanPhotos = getBooleanValue(refScanning, "scanPhotos", false);
-                    boolean scanDocs = getBooleanValue(refScanning, "scanDocs", false);
-                    return new AnalysisSettings(scanPosts, scanPages, scanComments, scanMoments, scanPhotos, scanDocs);
-                }
-                return new AnalysisSettings(true, true, false, false, false, false);
-            })
-            .defaultIfEmpty(new AnalysisSettings(true, true, false, false, false, false));
-    }
-
-    private boolean getBooleanValue(JsonNode node, String key, boolean defaultValue) {
-        JsonNode value = node.get(key);
-        if (value != null && value.isBoolean()) {
-            return value.asBoolean();
-        }
-        return defaultValue;
-    }
-
-    /**
      * URL 解码
      * 处理 %20、%E4%B8%AD 等编码
      */
@@ -1378,33 +1567,113 @@ public class ReferenceServiceImpl implements ReferenceService {
         }
     }
 
-    private record AnalysisSettings(boolean scanPosts, boolean scanPages, boolean scanComments, 
-                                     boolean scanMoments, boolean scanPhotos, boolean scanDocs) {}
+    @Override
+    public Mono<CleanupResult> deleteUnreferenced(List<String> attachmentNames) {
+        if (attachmentNames == null || attachmentNames.isEmpty()) {
+            return Mono.error(new IllegalArgumentException("附件列表不能为空"));
+        }
 
-    private record ExcludeSettings(Set<String> excludeGroups, Set<String> excludePolicies) {}
+        log.info("删除未引用文件，附件数: {}", attachmentNames.size());
+
+        List<String> errors = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger deletedCount = new AtomicInteger(0);
+        AtomicLong freedSize = new AtomicLong(0);
+
+        return Flux.fromIterable(attachmentNames)
+            .flatMap(attachmentName -> deleteUnreferencedAttachment(attachmentName, errors, deletedCount, freedSize))
+            .then(Mono.defer(() -> updateScanStatusAfterDelete(deletedCount.get(), freedSize.get())))
+            .thenReturn(new CleanupResult(
+                deletedCount.get(),
+                attachmentNames.size() - deletedCount.get(),
+                freedSize.get(),
+                errors
+            ));
+    }
 
     /**
-     * 获取排除设置
+     * 删除单个未引用附件
      */
-    private Mono<ExcludeSettings> getExcludeSettings() {
-        return settingFetcher.get("global")
-            .map(setting -> {
-                Set<String> excludeGroups = new HashSet<>();
-                Set<String> excludePolicies = new HashSet<>();
-                
-                JsonNode analysis = setting.get("analysis");
-                if (analysis != null) {
-                    JsonNode groups = analysis.get("excludeGroups");
-                    if (groups != null && groups.isArray()) {
-                        groups.forEach(node -> excludeGroups.add(node.asText()));
-                    }
-                    JsonNode policies = analysis.get("excludePolicies");
-                    if (policies != null && policies.isArray()) {
-                        policies.forEach(node -> excludePolicies.add(node.asText()));
-                    }
-                }
-                return new ExcludeSettings(excludeGroups, excludePolicies);
+    private Mono<Void> deleteUnreferencedAttachment(String attachmentName,
+                                                     List<String> errors,
+                                                     AtomicInteger deletedCount,
+                                                     AtomicLong freedSize) {
+        return client.fetch(Attachment.class, attachmentName)
+            .flatMap(attachment -> {
+                String displayName = attachment.getSpec().getDisplayName();
+                long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
+
+                return client.delete(attachment)
+                    .then(createCleanupLog(attachmentName, displayName, fileSize, "UNREFERENCED", null))
+                    .doOnSuccess(v -> {
+                        deletedCount.incrementAndGet();
+                        freedSize.addAndGet(fileSize);
+                        log.info("已删除未引用文件: {}", displayName);
+                    });
             })
-            .defaultIfEmpty(new ExcludeSettings(Set.of(), Set.of()));
+            .onErrorResume(e -> {
+                log.error("删除附件 {} 失败: {}", attachmentName, e.getMessage());
+                errors.add(attachmentName + ": " + e.getMessage());
+                return Mono.empty();
+            });
+    }
+
+    /**
+     * 创建清理日志
+     */
+    private Mono<Void> createCleanupLog(String attachmentName,
+                                         String displayName,
+                                         long size,
+                                         String reason,
+                                         String errorMessage) {
+        return getCurrentUsername()
+            .flatMap(operator -> {
+                com.timxs.storagetoolkit.extension.CleanupLog cleanupLog = new com.timxs.storagetoolkit.extension.CleanupLog();
+                cleanupLog.setMetadata(new Metadata());
+                cleanupLog.getMetadata().setGenerateName("cleanup-log-");
+
+                com.timxs.storagetoolkit.extension.CleanupLog.CleanupLogSpec spec =
+                    new com.timxs.storagetoolkit.extension.CleanupLog.CleanupLogSpec();
+                spec.setAttachmentName(attachmentName);
+                spec.setDisplayName(displayName);
+                spec.setSize(size);
+                spec.setReason(com.timxs.storagetoolkit.extension.CleanupLog.Reason.valueOf(reason));
+                spec.setOperator(operator);
+                spec.setDeletedAt(Instant.now());
+                spec.setErrorMessage(errorMessage);
+                cleanupLog.setSpec(spec);
+
+                return client.create(cleanupLog).then();
+            });
+    }
+
+    /**
+     * 获取当前登录用户名
+     */
+    private Mono<String> getCurrentUsername() {
+        return ReactiveSecurityContextHolder.getContext()
+            .map(ctx -> ctx.getAuthentication())
+            .filter(auth -> auth != null && auth.isAuthenticated())
+            .map(auth -> auth.getName())
+            .defaultIfEmpty("system");
+    }
+
+    /**
+     * 删除后更新扫描状态统计
+     */
+    private Mono<Void> updateScanStatusAfterDelete(int deletedCount, long freedSize) {
+        return getScanStatus()
+            .flatMap(status -> {
+                if (status.getStatus() != null) {
+                    int currentUnrefCount = status.getStatus().getUnreferencedCount();
+                    long currentUnrefSize = status.getStatus().getUnreferencedSize();
+                    status.getStatus().setUnreferencedCount(Math.max(0, currentUnrefCount - deletedCount));
+                    status.getStatus().setUnreferencedSize(Math.max(0, currentUnrefSize - freedSize));
+                    
+                    int currentTotal = status.getStatus().getTotalAttachments();
+                    status.getStatus().setTotalAttachments(Math.max(0, currentTotal - deletedCount));
+                }
+                return client.update(status);
+            })
+            .then();
     }
 }

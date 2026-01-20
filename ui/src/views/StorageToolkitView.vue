@@ -26,6 +26,7 @@
           :current-sub-tab="currentSubTab"
           @update:sub-tab="switchSubTab"
         />
+        <BatchProcessingPanel v-else-if="currentTab === 'batch'" />
         <ProcessingLogsPanel v-else-if="currentTab === 'logs'" />
       </main>
     </div>
@@ -39,6 +40,7 @@ import { VPageHeader, IconFolder } from '@halo-dev/components'
 import ProcessingLogsPanel from './panels/ProcessingLogsPanel.vue'
 import StatisticsPanel from './panels/StatisticsPanel.vue'
 import AnalysisPanel from './panels/AnalysisPanel.vue'
+import BatchProcessingPanel from './panels/BatchProcessingPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -46,6 +48,7 @@ const router = useRouter()
 const tabs = [
   { id: 'statistics', label: '存储统计', icon: '📊' },
   { id: 'analysis', label: '附件分析', icon: '🔍' },
+  { id: 'batch', label: '批量处理', icon: '⚡' },
   { id: 'logs', label: '处理日志', icon: '📝' }
 ]
 

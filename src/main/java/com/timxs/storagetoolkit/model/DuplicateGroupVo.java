@@ -71,6 +71,7 @@ public class DuplicateGroupVo {
         private Instant uploadTime;
         private String groupName;
         private String groupDisplayName;
+        private String policyName;
         private int referenceCount;
         private boolean isRecommended;
     }

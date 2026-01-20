@@ -82,7 +82,7 @@ public class OverviewEndpoint {
      * 获取最近5条处理日志
      */
     private Mono<List<ProcessingLog>> getRecentLogs() {
-        ProcessingLogQuery query = new ProcessingLogQuery(null, null, null, null, 1, 5);
+        ProcessingLogQuery query = new ProcessingLogQuery(null, null, null, null, null, 1, 5);
         return processingLogService.list(query).collectList();
     }
 

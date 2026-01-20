@@ -1,6 +1,10 @@
 package com.timxs.storagetoolkit.service;
 
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -21,48 +25,33 @@ import java.util.regex.Pattern;
 public class ContentScanner {
 
     /**
-     * HTML img 标签 src 属性
+     * Markdown 图片语法 - 改进版，提取括号内完整内容（不在空格截断）
+     * 匹配 ![alt](url) 或 ![alt](url "title")
      */
-    private static final Pattern HTML_IMG_PATTERN = 
-        Pattern.compile("<img[^>]+src=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MD_IMAGE_PATTERN =
+        Pattern.compile("!\\[[^\\]]*\\]\\(([^)\"]+)(?:\\s+\"[^\"]*\")?\\)");
 
     /**
-     * HTML a 标签 href 属性
+     * Markdown 链接语法 - 改进版，提取括号内完整内容
+     * 匹配 [text](url) 或 [text](url "title")
      */
-    private static final Pattern HTML_A_PATTERN = 
-        Pattern.compile("<a[^>]+href=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
-
-    /**
-     * HTML video/audio source 标签 src 属性
-     */
-    private static final Pattern HTML_MEDIA_PATTERN = 
-        Pattern.compile("<(?:source|video|audio)[^>]+src=[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
-
-    /**
-     * Markdown 图片语法
-     */
-    private static final Pattern MD_IMAGE_PATTERN = 
-        Pattern.compile("!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\"'][^\"']*[\"'])?\\)");
-
-    /**
-     * Markdown 链接语法
-     */
-    private static final Pattern MD_LINK_PATTERN = 
-        Pattern.compile("(?<!!)\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\"'][^\"']*[\"'])?\\)");
+    private static final Pattern MD_LINK_PATTERN =
+        Pattern.compile("(?<!!)\\[[^\\]]*\\]\\(([^)\"]+)(?:\\s+\"[^\"]*\")?\\)");
 
     /**
      * 通用相对路径匹配（适用于 JSON、纯文本等）
-     * 匹配 /upload/ 开头的路径，但排除完整 URL 中的路径部分
-     * 负向后行断言：前面不能是字母、数字、点、横线（域名字符）
+     * 匹配 /upload/ 开头的路径，支持包含空格和括号的文件名
+     * 要求以文件扩展名结尾（2-5个字母数字字符）
      */
-    private static final Pattern UPLOAD_PATH_PATTERN = 
-        Pattern.compile("(?<![a-zA-Z0-9.\\-])(/upload/[^\"'\\s<>\\]\\)]+)");
+    private static final Pattern UPLOAD_PATH_PATTERN =
+        Pattern.compile("(?<![a-zA-Z0-9.\\-])(/upload/[^\"'<>\\n]+?\\.\\w{2,5})(?=[\"'\\s<>\\]\\)\\},]|$)", Pattern.CASE_INSENSITIVE);
 
     /**
      * HTTP/HTTPS URL 匹配（适用于 JSON、纯文本等）
+     * 要求以文件扩展名结尾，支持包含空格的 URL
      */
-    private static final Pattern HTTP_URL_PATTERN = 
-        Pattern.compile("([\"']?)(https?://[^\"'\\s<>\\]\\)]+)\\1");
+    private static final Pattern HTTP_URL_PATTERN =
+        Pattern.compile("([\"']?)(https?://[^\"'<>\\n]+?\\.\\w{2,5})\\1(?=[\"'\\s<>\\]\\)\\},]|$)", Pattern.CASE_INSENSITIVE);
 
     /**
      * 提取结果，区分完整 URL 和相对路径
@@ -74,27 +63,109 @@ public class ContentScanner {
     }
 
     /**
+     * 从 HTML 内容中提取 URL（使用 Jsoup 解析）
+     * 提取 img[src], a[href], video[src], audio[src], source[src] 等属性
+     */
+    public ExtractResult extractUrlsFromHtml(String html) {
+        ExtractResult result = new ExtractResult();
+
+        if (!StringUtils.hasText(html)) {
+            return result;
+        }
+
+        try {
+            Document doc = Jsoup.parse(html);
+
+            // 提取图片 src
+            extractAttribute(doc.select("img[src]"), "src", result);
+
+            // 提取链接 href
+            extractAttribute(doc.select("a[href]"), "href", result);
+
+            // 提取视频 src
+            extractAttribute(doc.select("video[src]"), "src", result);
+
+            // 提取音频 src
+            extractAttribute(doc.select("audio[src]"), "src", result);
+
+            // 提取 source 标签 src
+            extractAttribute(doc.select("source[src]"), "src", result);
+
+            // 提取 iframe src
+            extractAttribute(doc.select("iframe[src]"), "src", result);
+
+            // 提取 embed src
+            extractAttribute(doc.select("embed[src]"), "src", result);
+
+            // 提取 object data
+            extractAttribute(doc.select("object[data]"), "data", result);
+
+            // 提取背景图片 style 属性中的 url()
+            doc.select("[style*=url]").forEach(el -> {
+                String style = el.attr("style");
+                extractUrlFromStyle(style, result);
+            });
+
+        } catch (Exception e) {
+            log.warn("Jsoup 解析 HTML 失败，回退到正则提取: {}", e.getMessage());
+            // 解析失败时回退到正则
+            return extractUrlsWithType(html);
+        }
+
+        return result;
+    }
+
+    /**
+     * 从元素属性中提取 URL
+     */
+    private void extractAttribute(Elements elements, String attr, ExtractResult result) {
+        for (Element el : elements) {
+            String url = el.attr(attr);
+            if (StringUtils.hasText(url)) {
+                String decodedUrl = decodeUrl(url.trim());
+                if (isValidUrl(decodedUrl)) {
+                    classifyUrl(decodedUrl, result);
+                }
+            }
+        }
+    }
+
+    /**
+     * 从 CSS style 中提取 url()
+     */
+    private void extractUrlFromStyle(String style, ExtractResult result) {
+        if (!StringUtils.hasText(style)) return;
+
+        Pattern urlPattern = Pattern.compile("url\\(['\"]?([^)'\"]+)['\"]?\\)");
+        Matcher matcher = urlPattern.matcher(style);
+        while (matcher.find()) {
+            String url = matcher.group(1);
+            if (StringUtils.hasText(url)) {
+                String decodedUrl = decodeUrl(url.trim());
+                if (isValidUrl(decodedUrl)) {
+                    classifyUrl(decodedUrl, result);
+                }
+            }
+        }
+    }
+
+    /**
      * 从内容中提取所有 URL，区分完整 URL 和相对路径
+     * 用于非 HTML 内容（Markdown、JSON、纯文本）
      */
     public ExtractResult extractUrlsWithType(String content) {
         ExtractResult result = new ExtractResult();
-        
+
         if (!StringUtils.hasText(content)) {
             return result;
         }
 
-        // HTML 标签
-        extractByPatternWithType(content, HTML_IMG_PATTERN, result, 1);
-        extractByPatternWithType(content, HTML_A_PATTERN, result, 1);
-        extractByPatternWithType(content, HTML_MEDIA_PATTERN, result, 1);
-        
         // Markdown 语法
         extractByPatternWithType(content, MD_IMAGE_PATTERN, result, 1);
         extractByPatternWithType(content, MD_LINK_PATTERN, result, 1);
-        
-        // JSON、纯文本中的 URL
+
+        // JSON、纯文本中的 URL（要求扩展名结尾）
         extractByPatternWithType(content, HTTP_URL_PATTERN, result, 2);
-        // 相对路径使用 group 1（正则已调整）
         extractByPatternWithType(content, UPLOAD_PATH_PATTERN, result, 1);
 
         return result;
@@ -118,13 +189,20 @@ public class ContentScanner {
             if (StringUtils.hasText(url)) {
                 String decodedUrl = decodeUrl(url.trim());
                 if (isValidUrl(decodedUrl)) {
-                    if (isFullUrl(decodedUrl)) {
-                        result.fullUrls().add(decodedUrl);
-                    } else if (decodedUrl.startsWith("/")) {
-                        result.relativePaths().add(decodedUrl);
-                    }
+                    classifyUrl(decodedUrl, result);
                 }
             }
+        }
+    }
+
+    /**
+     * 根据 URL 类型分类到对应的集合
+     */
+    private void classifyUrl(String url, ExtractResult result) {
+        if (isFullUrl(url)) {
+            result.fullUrls().add(url);
+        } else if (url.startsWith("/")) {
+            result.relativePaths().add(url);
         }
     }
 

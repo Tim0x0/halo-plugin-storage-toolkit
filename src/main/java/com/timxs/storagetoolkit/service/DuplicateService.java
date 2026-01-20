@@ -1,6 +1,7 @@
 package com.timxs.storagetoolkit.service;
 
 import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
+import com.timxs.storagetoolkit.model.CleanupResult;
 import com.timxs.storagetoolkit.model.DuplicateGroupVo;
 import reactor.core.publisher.Mono;
 import run.halo.app.extension.ListResult;
@@ -35,4 +36,12 @@ public interface DuplicateService {
      * @return 完成信号
      */
     Mono<Void> clearAll();
+
+    /**
+     * 删除重复文件
+     * @param groupMd5 重复组 MD5
+     * @param attachmentNames 要删除的附件名称列表
+     * @return 删除结果
+     */
+    Mono<CleanupResult> deleteDuplicates(String groupMd5, java.util.List<String> attachmentNames);
 }

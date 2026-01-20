@@ -14,6 +14,8 @@
     <div class="sub-content">
       <ReferenceTab v-if="currentSubTab === 'reference'" />
       <DuplicateTab v-else-if="currentSubTab === 'duplicate'" />
+      <BrokenLinkTab v-else-if="currentSubTab === 'broken-link'" />
+      <WhitelistTab v-else-if="currentSubTab === 'whitelist'" />
     </div>
   </div>
 </template>
@@ -21,10 +23,14 @@
 <script setup lang="ts">
 import ReferenceTab from './analysis/ReferenceTab.vue'
 import DuplicateTab from './analysis/DuplicateTab.vue'
+import BrokenLinkTab from './analysis/BrokenLinkTab.vue'
+import WhitelistTab from './analysis/WhitelistTab.vue'
 
 const subTabs = [
   { id: 'reference', label: '引用统计' },
-  { id: 'duplicate', label: '重复检测' }
+  { id: 'duplicate', label: '重复检测' },
+  { id: 'broken-link', label: '断链检测' },
+  { id: 'whitelist', label: '白名单管理' }
 ]
 
 defineProps<{ currentSubTab: string }>()

@@ -10,20 +10,31 @@
         <button class="btn-clear" @click="clearRecords" :disabled="scanning || !stats.lastScanTime">
           清空记录
         </button>
+        <button 
+          class="btn-delete" 
+          @click="deleteSelected" 
+          :disabled="selectedAttachments.length === 0"
+          v-if="filterType === 'unreferenced' && attachmentList.length > 0"
+        >
+          删除选中 ({{ selectedAttachments.length }})
+        </button>
         <span class="scan-info" v-if="stats.lastScanTime">上次扫描：{{ formatTime(stats.lastScanTime) }}</span>
         <span class="scan-info" v-else-if="stats.phase === 'scanning'">正在扫描...</span>
         <span class="scan-info error" v-else-if="stats.phase === 'error'">扫描失败：{{ stats.errorMessage }}</span>
       </div>
       <div class="toolbar-right">
-        <select v-model="filterType" class="filter-select" @change="handleFilterChange">
-          <option value="all">全部</option>
-          <option value="referenced">已引用</option>
-          <option value="unreferenced">未引用</option>
-        </select>
-        <input 
-          type="text" 
-          v-model="searchQuery" 
-          placeholder="搜索文件名..." 
+        <div class="filter-wrapper">
+           <span class="filter-hint" v-if="filterType !== 'unreferenced'">切换至「未引用」可批量删除附件</span>
+            <select v-model="filterType" class="filter-select" @change="handleFilterChange">
+            <option value="all">全部</option>
+            <option value="referenced">已引用</option>
+            <option value="unreferenced">未引用</option>
+          </select>
+        </div>
+        <input
+          type="text"
+          v-model="searchQuery"
+          placeholder="搜索文件名..."
           class="search-input"
           @input="handleSearchDebounced"
         />
@@ -37,7 +48,7 @@
     </div>
 
     <!-- 统计概览 -->
-    <div class="stats-row" v-if="stats.lastScanTime || stats.phase === 'scanning'">
+    <div class="stats-row">
       <div class="stat-box">
         <span class="stat-num">{{ referenceRate }}%</span>
         <span class="stat-text">引用率</span>
@@ -55,24 +66,6 @@
         <span class="stat-text">未引用占用</span>
       </div>
     </div>
-    <div class="stats-row stats-placeholder" v-else>
-      <div class="stat-box">
-        <span class="stat-num">-</span>
-        <span class="stat-text">引用率</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num">-</span>
-        <span class="stat-text">已引用</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num">-</span>
-        <span class="stat-text">未引用</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num">-</span>
-        <span class="stat-text">未引用占用</span>
-      </div>
-    </div>
 
     <!-- 附件列表 -->
     <div class="card">
@@ -87,6 +80,14 @@
         <table class="data-table">
           <thead>
             <tr>
+              <th class="col-checkbox" v-if="filterType === 'unreferenced'">
+                <input 
+                  type="checkbox" 
+                  :checked="isAllSelected" 
+                  :indeterminate="isIndeterminate"
+                  @change="toggleSelectAll"
+                />
+              </th>
               <th>文件名</th>
               <th>类型</th>
               <th>大小</th>
@@ -98,7 +99,14 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in attachmentList" :key="item.attachmentName" :class="{ highlighted: highlightedAttachment === item.attachmentName }">
+            <tr v-for="item in attachmentList" :key="item.attachmentName" :class="{ highlighted: highlightedAttachment === item.attachmentName, selected: selectedAttachments.includes(item.attachmentName) }">
+              <td class="col-checkbox" v-if="filterType === 'unreferenced'">
+                <input 
+                  type="checkbox" 
+                  :checked="selectedAttachments.includes(item.attachmentName)"
+                  @change="toggleSelect(item.attachmentName)"
+                />
+              </td>
               <td class="cell-name">
                 <img 
                   v-if="item.mediaType?.startsWith('image/') && item.permalink" 
@@ -107,7 +115,7 @@
                   @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
                 />
                 <span v-else class="file-icon">{{ getFileIcon(item.mediaType) }}</span>
-                {{ item.displayName }}
+                <span class="file-name-text" @click="showReferenceDetail(item)">{{ item.displayName }}</span>
               </td>
               <td>{{ item.mediaType }}</td>
               <td>{{ formatBytes(item.size) }}</td>
@@ -146,9 +154,9 @@
             <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
           </div>
           <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
-            <option :value="20">20条/页</option>
-            <option :value="50">50条/页</option>
-            <option :value="100">100条/页</option>
+            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
+              {{ size }}条/页
+            </option>
           </select>
         </div>
       </template>
@@ -236,6 +244,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
 import { Dialog, Toast } from '@halo-dev/components'
+import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
+import { API_ENDPOINTS } from '@/constants/api'
 
 interface ReferenceSource {
   sourceType: string
@@ -269,8 +279,6 @@ interface StatsResponse {
   errorMessage: string | null
 }
 
-const API_BASE = '/apis/console.api.storage-toolkit.timxs.com/v1alpha1/references'
-
 // Setting 类型常量
 const SETTING_TYPES = ['SystemSetting', 'PluginSetting', 'ThemeSetting']
 
@@ -281,7 +289,7 @@ const scanning = ref(false)
 const filterType = ref('all')
 const searchQuery = ref('')
 const page = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(DEFAULT_PAGE_SIZE)
 const total = ref(0)
 const sortField = ref('referenceCount')
 const sortDesc = ref(true)
@@ -302,6 +310,7 @@ const selectedAttachment = ref<AttachmentReferenceVo | null>(null)
 const highlightedAttachment = ref<string | null>(null)
 const policyDisplayName = ref<string | null>(null)
 const groupDisplayName = ref<string | null>(null)
+const selectedAttachments = ref<string[]>([])
 
 // Setting group label 缓存
 const settingGroupLabelCache = ref<Record<string, string>>({})
@@ -315,6 +324,15 @@ const referenceRate = computed(() => {
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
+const isAllSelected = computed(() => {
+  return attachmentList.value.length > 0 && 
+    attachmentList.value.every(item => selectedAttachments.value.includes(item.attachmentName))
+})
+
+const isIndeterminate = computed(() => {
+  return selectedAttachments.value.length > 0 && !isAllSelected.value
+})
+
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const handleSearchDebounced = () => {
@@ -327,12 +345,60 @@ const handleSearchDebounced = () => {
 
 const handleFilterChange = () => {
   page.value = 1
+  selectedAttachments.value = []
   fetchReferences()
 }
 
 const handlePageSizeChange = () => {
   page.value = 1
+  selectedAttachments.value = []
   fetchReferences()
+}
+
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    selectedAttachments.value = []
+  } else {
+    selectedAttachments.value = attachmentList.value.map(item => item.attachmentName)
+  }
+}
+
+const toggleSelect = (attachmentName: string) => {
+  const index = selectedAttachments.value.indexOf(attachmentName)
+  if (index === -1) {
+    selectedAttachments.value.push(attachmentName)
+  } else {
+    selectedAttachments.value.splice(index, 1)
+  }
+}
+
+const deleteSelected = () => {
+  if (selectedAttachments.value.length === 0) return
+
+  Dialog.warning({
+    title: '确认删除附件',
+    description: `确定要永久删除选中的 ${selectedAttachments.value.length} 个附件文件吗？此操作将删除存储中的文件，不可恢复。`,
+    confirmType: 'danger',
+    confirmText: '删除',
+    cancelText: '取消',
+    async onConfirm() {
+      try {
+        const toDelete = [...selectedAttachments.value]
+        await axiosInstance.delete(API_ENDPOINTS.CLEANUP_UNREFERENCED, {
+          data: { attachmentNames: toDelete }
+        })
+        Toast.success('删除成功')
+        // 从前端列表中移除已删除项，不请求后端
+        attachmentList.value = attachmentList.value.filter(
+          item => !toDelete.includes(item.attachmentName)
+        )
+        total.value = Math.max(0, total.value - toDelete.length)
+        selectedAttachments.value = []
+      } catch (error: any) {
+        Toast.error('删除失败: ' + (error.response?.data?.message || error.message))
+      }
+    }
+  })
 }
 
 const toggleSort = (field: string) => {
@@ -354,7 +420,7 @@ const changePage = (newPage: number) => {
 
 const fetchStats = async () => {
   try {
-    const { data } = await axiosInstance.get<StatsResponse>(`${API_BASE}/stats`)
+    const { data } = await axiosInstance.get<StatsResponse>(API_ENDPOINTS.REFERENCES_STATS)
     stats.value = data
     scanning.value = data.phase === 'scanning'
   } catch (error) {
@@ -377,7 +443,7 @@ const fetchReferences = async () => {
       params.set('sort', `${sortField.value},${sortDesc.value ? 'desc' : 'asc'}`)
     }
 
-    const { data } = await axiosInstance.get(`${API_BASE}?${params.toString()}`)
+    const { data } = await axiosInstance.get(`${API_ENDPOINTS.REFERENCES}?${params.toString()}`)
     attachmentList.value = data.items || []
     total.value = data.total || 0
   } catch (error) {
@@ -390,7 +456,7 @@ const fetchReferences = async () => {
 const startScan = async () => {
   scanning.value = true
   try {
-    await axiosInstance.post(`${API_BASE}/scan`)
+    await axiosInstance.post(API_ENDPOINTS.REFERENCES_SCAN)
     // 轮询扫描状态
     pollScanStatus()
   } catch (error: any) {
@@ -408,7 +474,7 @@ const clearRecords = () => {
     cancelText: '取消',
     async onConfirm() {
       try {
-        await axiosInstance.delete(`${API_BASE}/clear`)
+        await axiosInstance.delete(API_ENDPOINTS.REFERENCES_CLEAR)
         Toast.success('引用扫描记录已清空')
         // 重置状态
         stats.value = {
@@ -452,7 +518,7 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
   // 异步获取 Policy displayName
   if (item.policyName) {
     try {
-      const { data } = await axiosInstance.get(`${API_BASE}/policy/${item.policyName}`)
+      const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_POLICY(item.policyName))
       policyDisplayName.value = data.displayName
     } catch (e) {
       policyDisplayName.value = item.policyName
@@ -460,11 +526,11 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
   } else {
     policyDisplayName.value = '默认策略'
   }
-  
+
   // 异步获取 Group displayName
   if (item.groupName) {
     try {
-      const { data } = await axiosInstance.get(`${API_BASE}/group/${item.groupName}`)
+      const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_GROUP(item.groupName))
       groupDisplayName.value = data.displayName
     } catch (e) {
       groupDisplayName.value = item.groupName
@@ -482,14 +548,14 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
         const kind = ref.sourceTitle.substring(0, colonIndex)
         const name = ref.sourceTitle.substring(colonIndex + 1)
         try {
-          const { data } = await axiosInstance.get(`${API_BASE}/subject/${kind}/${name}`)
+          const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SUBJECT(kind, name))
           if (data.title || data.url) {
             // 更新本地显示
             ref.sourceTitle = data.title || ref.sourceTitle
             ref.sourceUrl = data.url
             // 更新后端缓存
             await axiosInstance.put(
-              `${API_BASE}/${item.attachmentName}/source/${ref.sourceName}`,
+              API_ENDPOINTS.REFERENCES_SOURCE(item.attachmentName, ref.sourceName),
               null,
               { params: { sourceTitle: data.title, sourceUrl: data.url } }
             )
@@ -506,14 +572,14 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
       if (match) {
         const [, docName] = match
         try {
-          const { data } = await axiosInstance.get(`${API_BASE}/subject/Doc/${docName}`)
+          const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SUBJECT('Doc', docName))
           if (data.title || data.url) {
             // 更新本地显示
             ref.sourceTitle = data.title || ref.sourceTitle
             ref.sourceUrl = data.url
             // 更新后端缓存
             await axiosInstance.put(
-              `${API_BASE}/${item.attachmentName}/source/${ref.sourceName}`,
+              API_ENDPOINTS.REFERENCES_SOURCE(item.attachmentName, ref.sourceName),
               null,
               { params: { sourceTitle: data.title, sourceUrl: data.url } }
             )
@@ -532,11 +598,13 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
 }
 
 const getFileIcon = (type: string): string => {
-  if (!type) return '📦'
+  if (!type) return '📄'
   if (type.startsWith('image/')) return '🖼️'
   if (type.startsWith('video/')) return '🎬'
-  if (type.includes('pdf')) return '📄'
-  return '📦'
+  if (type.startsWith('audio/')) return '🎵'
+  if (type.includes('pdf')) return '📕'
+  if (type.includes('zip') || type.includes('rar')) return '📦'
+  return '📄'
 }
 
 const getSourceTypeLabel = (type: string): string => {
@@ -629,9 +697,9 @@ const fetchSettingGroupLabel = async (settingName: string, groupKey: string): Pr
   if (settingGroupLabelCache.value[cacheKey]) {
     return settingGroupLabelCache.value[cacheKey]
   }
-  
+
   try {
-    const { data } = await axiosInstance.get(`${API_BASE}/settings/${settingName}/groups/${groupKey}/label`)
+    const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SETTING_GROUP_LABEL(settingName, groupKey))
     settingGroupLabelCache.value[cacheKey] = data.label
     return data.label
   } catch (e) {
@@ -753,6 +821,26 @@ watch(() => route.query.attachment, () => {
   cursor: not-allowed;
 }
 
+.btn-delete {
+  padding: 8px 16px;
+  font-size: 14px;
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.btn-delete:disabled {
+  background: #fca5a5;
+  cursor: not-allowed;
+}
+
 .scan-info {
   font-size: 13px;
   color: #71717a;
@@ -762,12 +850,24 @@ watch(() => route.query.attachment, () => {
   color: #dc2626;
 }
 
+.filter-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .filter-select, .search-input {
   padding: 8px 12px;
   font-size: 14px;
   border: 1px solid #e4e4e7;
   border-radius: 6px;
   background: white;
+}
+
+.filter-hint {
+  font-size: 12px;
+  color: #16a34a;
+  white-space: nowrap;
 }
 
 .search-input {
@@ -860,6 +960,17 @@ watch(() => route.query.attachment, () => {
   background: #f4f4f5;
 }
 
+.col-checkbox {
+  width: 40px;
+  text-align: center;
+}
+
+.col-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
 .data-table td {
   font-size: 14px;
   color: #18181b;
@@ -877,6 +988,14 @@ watch(() => route.query.attachment, () => {
   background: #fafafa;
 }
 
+.data-table tbody tr.selected {
+  background: #eff6ff;
+}
+
+.data-table tbody tr.selected:hover {
+  background: #dbeafe;
+}
+
 .data-table tbody tr.highlighted:hover {
   background: #fef3c7;
 }
@@ -885,6 +1004,18 @@ watch(() => route.query.attachment, () => {
   display: flex;
   align-items: center;
   gap: 8px;
+  cursor: pointer;
+}
+
+.cell-name:hover .file-name-text {
+  color: #2563eb;
+}
+
+.file-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s;
 }
 
 .file-icon {

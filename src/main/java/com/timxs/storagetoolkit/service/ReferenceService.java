@@ -2,6 +2,7 @@ package com.timxs.storagetoolkit.service;
 
 import com.timxs.storagetoolkit.extension.AttachmentReference;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
+import com.timxs.storagetoolkit.model.CleanupResult;
 import reactor.core.publisher.Mono;
 import run.halo.app.extension.ListResult;
 
@@ -76,6 +77,14 @@ public interface ReferenceService {
      * @return 完成信号
      */
     Mono<Void> clearAll();
+
+    /**
+     * 删除未引用附件
+     *
+     * @param attachmentNames 要删除的附件名称列表
+     * @return 删除结果
+     */
+    Mono<CleanupResult> deleteUnreferenced(java.util.List<String> attachmentNames);
 
     /**
      * 获取 Setting group 的显示标签

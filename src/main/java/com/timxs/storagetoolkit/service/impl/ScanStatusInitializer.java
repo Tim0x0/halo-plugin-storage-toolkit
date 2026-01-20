@@ -1,5 +1,7 @@
 package com.timxs.storagetoolkit.service.impl;
 
+import com.timxs.storagetoolkit.extension.BatchProcessingStatus;
+import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus;
 import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
 import jakarta.annotation.PostConstruct;
@@ -34,7 +36,9 @@ public class ScanStatusInitializer {
             .then(Mono.defer(() -> {
                 log.info("开始检查并重置卡住的扫描状态...");
                 return resetStuckDuplicateScanStatus()
-                    .then(resetStuckReferenceScanStatus());
+                    .then(resetStuckReferenceScanStatus())
+                    .then(resetStuckBrokenLinkScanStatus())
+                    .then(resetStuckBatchProcessingStatus());
             }))
             .subscribe(
                 v -> log.info("扫描状态检查完成"),
@@ -91,6 +95,60 @@ public class ScanStatusInitializer {
             })
             .onErrorResume(error -> {
                 log.debug("重置引用扫描状态: {}", error.getMessage());
+                return Mono.empty();
+            })
+            .then();
+    }
+
+    /**
+     * 重置卡住的断链扫描状态
+     */
+    private Mono<Void> resetStuckBrokenLinkScanStatus() {
+        return client.fetch(BrokenLinkScanStatus.class, BrokenLinkScanStatus.SINGLETON_NAME)
+            .filter(status -> status.getStatus() != null
+                && BrokenLinkScanStatus.Phase.SCANNING.equals(status.getStatus().getPhase()))
+            .flatMap(status -> {
+                log.warn("检测到断链扫描状态为 SCANNING，重置为 ERROR（上次扫描被中断）");
+                status.getStatus().setPhase(BrokenLinkScanStatus.Phase.ERROR);
+                status.getStatus().setErrorMessage("扫描被中断（服务重启）");
+                return client.update(status);
+            })
+            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
+                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
+            .doOnSuccess(v -> {
+                if (v != null) {
+                    log.info("断链扫描状态已重置");
+                }
+            })
+            .onErrorResume(error -> {
+                log.debug("重置断链扫描状态: {}", error.getMessage());
+                return Mono.empty();
+            })
+            .then();
+    }
+
+    /**
+     * 重置卡住的批量处理状态
+     */
+    private Mono<Void> resetStuckBatchProcessingStatus() {
+        return client.fetch(BatchProcessingStatus.class, BatchProcessingStatus.SINGLETON_NAME)
+            .filter(status -> status.getStatus() != null
+                && BatchProcessingStatus.Phase.PROCESSING.equals(status.getStatus().getPhase()))
+            .flatMap(status -> {
+                log.warn("检测到批量处理状态为 PROCESSING，重置为 ERROR（上次处理被中断）");
+                status.getStatus().setPhase(BatchProcessingStatus.Phase.ERROR);
+                status.getStatus().setErrorMessage("处理被中断（服务重启）");
+                return client.update(status);
+            })
+            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
+                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
+            .doOnSuccess(v -> {
+                if (v != null) {
+                    log.info("批量处理状态已重置");
+                }
+            })
+            .onErrorResume(error -> {
+                log.debug("重置批量处理状态: {}", error.getMessage());
                 return Mono.empty();
             })
             .then();

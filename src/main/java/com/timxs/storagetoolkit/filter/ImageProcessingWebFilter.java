@@ -248,18 +248,29 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 }
 
                 // 获取处理许可，限制并发数
-                Semaphore permits = getProcessingPermits(config);
+                // 注意：必须在 acquire 时保存 Semaphore 引用，确保 release 同一个对象
+                // 避免配置变更导致的竞态条件
+                final Semaphore permits = getProcessingPermits(config);
                 return Mono.fromCallable(() -> {
                         permits.acquire();
-                        return true;
+                        return permits; // 返回获取许可的 Semaphore 引用
                     })
                     .subscribeOn(Schedulers.boundedElastic())
-                    .flatMap(acquired -> DataBufferUtils.join(filePart.content())
+                    .flatMap(acquiredPermits -> DataBufferUtils.join(filePart.content())
                         .flatMap(dataBuffer -> {
                             byte[] imageData = new byte[dataBuffer.readableByteCount()];
                             dataBuffer.read(imageData);
                             DataBufferUtils.release(dataBuffer);
                             long originalSize = imageData.length;
+
+                            // 二次校验文件大小（Content-Length 可能为 -1 被绕过）
+                            if (maxFileSize > 0 && originalSize > maxFileSize) {
+                                log.debug("File size {} exceeds max limit {}, skip processing: {}", 
+                                    originalSize, maxFileSize, filename);
+                                saveSkippedLog(filename, contentType, originalSize, startTime, 
+                                    "文件大小超过限制", source);
+                                return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
+                            }
 
                             // 检查是否需要处理
                             String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
@@ -292,8 +303,8 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                                     return uploadAndRespond(attachConfig, filename, imageData, imageMediaType, auth, exchange);
                                 });
                         })
-                    )
-                    .doFinally(signal -> permits.release());
+                        .doFinally(signal -> acquiredPermits.release()) // 释放获取许可时的同一个 Semaphore
+                    );
             });
     }
 
@@ -490,18 +501,30 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
         }
 
         // 获取处理许可，限制并发数
-        Semaphore permits = getProcessingPermits(config);
+        // 注意：必须在 acquire 时保存 Semaphore 引用，确保 release 同一个对象
+        final Semaphore permits = getProcessingPermits(config);
         return Mono.fromCallable(() -> {
                 permits.acquire();
-                return true;
+                return permits; // 返回获取许可的 Semaphore 引用
             })
             .subscribeOn(Schedulers.boundedElastic())
-            .flatMap(acquired -> DataBufferUtils.join(filePart.content())
+            .flatMap(acquiredPermits -> DataBufferUtils.join(filePart.content())
                 .flatMap(dataBuffer -> {
                     byte[] imageData = new byte[dataBuffer.readableByteCount()];
                     dataBuffer.read(imageData);
                     DataBufferUtils.release(dataBuffer);
                     long originalSize = imageData.length;
+
+                    // 二次校验文件大小（Content-Length 可能为 -1 被绕过）
+                    if (maxFileSize > 0 && originalSize > maxFileSize) {
+                        log.debug("File size {} exceeds max limit {}, skip processing: {}", 
+                            originalSize, maxFileSize, filename);
+                        saveSkippedLog(filename, contentType, originalSize, startTime, 
+                            "文件大小超过限制", source);
+                        DataBuffer buffer = bufferFactory.wrap(imageData);
+                        return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
+                            .flatMap(chain::filter);
+                    }
 
                     String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
                     if (skipReason != null) {
@@ -542,8 +565,8 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                                 .flatMap(chain::filter);
                         });
                 })
-            )
-            .doFinally(signal -> permits.release());
+                .doFinally(signal -> acquiredPermits.release()) // 释放获取许可时的同一个 Semaphore
+            );
     }
 
     private boolean shouldProcessForConfig(ProcessingConfig config, String policyName, String groupName) {

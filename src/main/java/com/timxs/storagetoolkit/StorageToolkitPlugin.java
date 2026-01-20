@@ -1,10 +1,15 @@
 package com.timxs.storagetoolkit;
 
 import com.timxs.storagetoolkit.extension.AttachmentReference;
+import com.timxs.storagetoolkit.extension.BatchProcessingStatus;
+import com.timxs.storagetoolkit.extension.BrokenLink;
+import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus;
+import com.timxs.storagetoolkit.extension.CleanupLog;
 import com.timxs.storagetoolkit.extension.DuplicateGroup;
 import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
+import com.timxs.storagetoolkit.extension.WhitelistEntry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import run.halo.app.extension.SchemeManager;
@@ -81,6 +86,41 @@ public class StorageToolkitPlugin extends BasePlugin {
         // 注册 DuplicateGroup Extension
         schemeManager.register(DuplicateGroup.class);
 
+        // 注册 BatchProcessingStatus Extension
+        schemeManager.register(BatchProcessingStatus.class);
+
+        // 注册 CleanupLog Extension（带索引）
+        schemeManager.register(CleanupLog.class, indexSpecs -> {
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.attachmentName")
+                .setIndexFunc(simpleAttribute(CleanupLog.class,
+                    log -> log.getSpec() != null ? log.getSpec().getAttachmentName() : null)));
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.reason")
+                .setIndexFunc(simpleAttribute(CleanupLog.class,
+                    log -> log.getSpec() != null && log.getSpec().getReason() != null 
+                        ? log.getSpec().getReason().name() : null)));
+        });
+
+        // 注册 BrokenLinkScanStatus Extension
+        schemeManager.register(BrokenLinkScanStatus.class);
+
+        // 注册 BrokenLink Extension（带索引）
+        schemeManager.register(BrokenLink.class, indexSpecs -> {
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.url")
+                .setIndexFunc(simpleAttribute(BrokenLink.class,
+                    link -> link.getSpec() != null ? link.getSpec().getUrl() : null)));
+        });
+
+        // 注册 WhitelistEntry Extension（带索引）
+        schemeManager.register(WhitelistEntry.class, indexSpecs -> {
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.url")
+                .setIndexFunc(simpleAttribute(WhitelistEntry.class,
+                    entry -> entry.getSpec() != null ? entry.getSpec().getUrl() : null)));
+        });
+
         // 手动注册 ImageIO SPI（解决插件类加载器隔离问题）
         registerImageIOSpi();
 
@@ -104,6 +144,11 @@ public class StorageToolkitPlugin extends BasePlugin {
         schemeManager.unregister(schemeManager.get(ReferenceScanStatus.class));
         schemeManager.unregister(schemeManager.get(DuplicateScanStatus.class));
         schemeManager.unregister(schemeManager.get(DuplicateGroup.class));
+        schemeManager.unregister(schemeManager.get(BatchProcessingStatus.class));
+        schemeManager.unregister(schemeManager.get(CleanupLog.class));
+        schemeManager.unregister(schemeManager.get(BrokenLinkScanStatus.class));
+        schemeManager.unregister(schemeManager.get(BrokenLink.class));
+        schemeManager.unregister(schemeManager.get(WhitelistEntry.class));
 
         log.info("Storage Toolkit 插件已停止");
     }
