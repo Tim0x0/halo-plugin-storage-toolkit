@@ -304,6 +304,7 @@ const getSourceText = (source: string | undefined): string => {
     case 'console-editor': return '控制台编辑器'
     case 'uc-editor': return 'UC编辑器'
     case 'attachment-manager': return '附件管理'
+    case 'batch-processing': return '批量处理'
     default: return source
   }
 }
@@ -587,6 +588,11 @@ onMounted(() => handleRefresh())
 .source-attachmentmanager {
   background: #d1fae5;
   color: #065f46;
+}
+
+.source-batchprocessing {
+  background: #ffedd5;
+  color: #9a3412;
 }
 
 /* 压缩率 */
