@@ -173,11 +173,11 @@
             </div>
             <div class="info-item">
               <span class="info-label">存储策略</span>
-              <span class="info-value">{{ policyDisplayName ?? '加载中...' }}</span>
+              <span class="info-value">{{ previewFile?.policyDisplayName || previewFile?.policyName || '默认策略' }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">分组</span>
-              <span class="info-value">{{ groupDisplayName ?? '加载中...' }}</span>
+              <span class="info-value">{{ previewFile?.groupDisplayName || '未分组' }}</span>
             </div>
             <div class="info-item">
               <span class="info-label">上传时间</span>
@@ -226,41 +226,13 @@ const selectedFiles = ref<Record<string, string[]>>({})
 const showPreview = ref(false)
 const previewFile = ref<DuplicateFile | null>(null)
 const previewFileSize = ref<number>(0)
-const policyDisplayName = ref<string | null>(null)
-const groupDisplayName = ref<string | null>(null)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const openPreview = async (file: DuplicateFile, size: number) => {
   previewFile.value = file
   previewFileSize.value = size
-  policyDisplayName.value = null
-  groupDisplayName.value = null
   showPreview.value = true
-
-  // 异步获取 Policy displayName
-  if (file.policyName) {
-    try {
-      const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_POLICY(file.policyName))
-      policyDisplayName.value = data.displayName
-    } catch (e) {
-      policyDisplayName.value = file.policyName
-    }
-  } else {
-    policyDisplayName.value = '默认策略'
-  }
-
-  // 异步获取 Group displayName
-  if (file.groupName) {
-    try {
-      const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_GROUP(file.groupName))
-      groupDisplayName.value = data.displayName
-    } catch (e) {
-      groupDisplayName.value = file.groupName
-    }
-  } else {
-    groupDisplayName.value = '未分组'
-  }
 }
 
 const progressPercent = computed(() => {

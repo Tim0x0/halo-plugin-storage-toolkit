@@ -142,6 +142,7 @@
 import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
 import type { StatisticsData, CategoryStats } from '@/types/statistics'
+import { API_ENDPOINTS } from '@/constants/api'
 import echarts from '@/echarts'
 
 // 状态
@@ -277,33 +278,23 @@ const createPieOption = (data: Array<{ name: string; count: number; size: number
 
 // 初始化图表
 const initCharts = () => {
-  // 先销毁旧实例（处理组件重新挂载的情况）
-  if (typeChart.value) {
-    typeChart.value.dispose()
-    typeChart.value = null
-  }
-  if (policyChart.value) {
-    policyChart.value.dispose()
-    policyChart.value = null
-  }
-  
-  // 创建新实例
-  if (typeChartRef.value) {
+  // 创建新实例（如果不存在）
+  if (!typeChart.value && typeChartRef.value) {
     typeChart.value = echarts.init(typeChartRef.value)
   }
-  if (policyChartRef.value) {
+  if (!policyChart.value && policyChartRef.value) {
     policyChart.value = echarts.init(policyChartRef.value)
   }
   updateCharts()
 }
 
-// 更新图表
+// 更新图表（使用 setOption 而非销毁重建，避免闪烁）
 const updateCharts = () => {
   if (typeChart.value && typeDataWithColor.value.length > 0) {
-    typeChart.value.setOption(createPieOption(typeDataWithColor.value))
+    typeChart.value.setOption(createPieOption(typeDataWithColor.value), true)
   }
   if (policyChart.value && policyDataWithColor.value.length > 0) {
-    policyChart.value.setOption(createPieOption(policyDataWithColor.value))
+    policyChart.value.setOption(createPieOption(policyDataWithColor.value), true)
   }
 }
 
@@ -334,9 +325,9 @@ const formatBytes = (bytes: number): string => {
 const fetchStatistics = async () => {
   loading.value = true
   error.value = null
-  
+
   try {
-    const { data } = await axiosInstance.get<StatisticsData>('/apis/console.api.storage-toolkit.timxs.com/v1alpha1/statistics')
+    const { data } = await axiosInstance.get<StatisticsData>(API_ENDPOINTS.STATISTICS)
     statisticsData.value = data
   } catch (e) {
     error.value = e instanceof Error ? e.message : '获取统计数据失败'

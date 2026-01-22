@@ -113,12 +113,12 @@ spec:
               help: MD5 计算的并发数，值越大扫描越快但占用资源越多（1-10）
             
             - $formkit: number
-              name: scanTimeoutMinutes
-              label: 扫描超时时间（分钟）
-              value: 5
-              min: 1
-              max: 30
-              help: 扫描超过此时间后视为超时，允许重新触发扫描
+              name: md5TimeoutSeconds
+              label: MD5 计算超时（秒）
+              value: 90
+              min: 30
+              max: 300
+              help: 重复检测时单个文件 MD5 计算的超时时间，网络较慢时可适当增加
         
     # ==================== 图片处理 ====================
     - group: imageProcessing

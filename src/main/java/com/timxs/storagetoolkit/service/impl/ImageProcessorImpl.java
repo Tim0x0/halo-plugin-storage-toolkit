@@ -1,5 +1,7 @@
 package com.timxs.storagetoolkit.service.impl;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.timxs.storagetoolkit.config.ImageWatermarkConfig;
 import com.timxs.storagetoolkit.config.ProcessingConfig;
 import com.timxs.storagetoolkit.config.TextWatermarkConfig;
@@ -21,6 +23,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -47,6 +50,16 @@ public class ImageProcessorImpl implements ImageProcessor {
      * 外部链接处理器，用于将相对路径转为完整 URL
      */
     private final ExternalLinkProcessor externalLinkProcessor;
+
+    /**
+     * 水印图片缓存
+     * Key: 图片 URL，Value: BufferedImage
+     * 30 分钟过期，最多缓存 5 个水印图片
+     */
+    private static final Cache<String, BufferedImage> watermarkImageCache = Caffeine.newBuilder()
+        .expireAfterWrite(Duration.ofMinutes(30))
+        .maximumSize(5)
+        .build();
 
     /**
      * 处理图片
@@ -163,21 +176,27 @@ public class ImageProcessorImpl implements ImageProcessor {
         if (contentType == null || contentType.isBlank()) {
             return false;
         }
-        
+
         List<String> allowedFormats = config.getAllowedFormats();
         if (allowedFormats == null || allowedFormats.isEmpty()) {
             return false;
         }
-        
+
         String format = extractFormat(contentType);
         return allowedFormats.stream()
             .anyMatch(allowed -> {
                 String normalizedAllowed = allowed.trim().toLowerCase();
                 String normalizedFormat = format.toLowerCase();
-                return normalizedAllowed.equals(normalizedFormat) 
+                return normalizedAllowed.equals(normalizedFormat)
                     || normalizedAllowed.equals("image/" + normalizedFormat)
                     || ("image/" + normalizedAllowed).equals(contentType.toLowerCase());
             });
+    }
+
+    @Override
+    public boolean hasProcessingEnabled(ProcessingConfig config) {
+        return config.getWatermark().isEnabled()
+            || config.getFormatConversion().isEnabled();
     }
 
     /**
@@ -401,7 +420,7 @@ public class ImageProcessorImpl implements ImageProcessor {
     }
 
     /**
-     * 从URL加载水印图片
+     * 从URL加载水印图片（带缓存）
      * 支持相对路径（Halo 附件）和完整 HTTP URL
      * 注意：不支持 WebP 格式的水印图片，请使用 PNG 或 JPEG
      *
@@ -416,8 +435,33 @@ public class ImageProcessorImpl implements ImageProcessor {
 
         // 使用 ExternalLinkProcessor 处理链接，自动将相对路径转为完整 URL
         String fullUrl = externalLinkProcessor.processLink(imageUrl);
-        log.debug("水印图片地址: {} -> {}", imageUrl, fullUrl);
 
+        // 尝试从缓存获取
+        BufferedImage cached = watermarkImageCache.getIfPresent(fullUrl);
+        if (cached != null) {
+            log.debug("水印图片命中缓存: {}", fullUrl);
+            return cached;
+        }
+
+        log.debug("水印图片未命中缓存，开始下载: {} -> {}", imageUrl, fullUrl);
+        BufferedImage image = doLoadWatermarkImage(fullUrl);
+
+        // 加载成功则放入缓存
+        if (image != null) {
+            watermarkImageCache.put(fullUrl, image);
+            log.debug("水印图片已缓存: {}", fullUrl);
+        }
+
+        return image;
+    }
+
+    /**
+     * 实际从 URL 下载水印图片
+     *
+     * @param fullUrl 完整 URL
+     * @return 水印图片，加载失败返回 null
+     */
+    private BufferedImage doLoadWatermarkImage(String fullUrl) {
         java.net.HttpURLConnection conn = null;
         try {
             java.net.URL url = java.net.URI.create(fullUrl).toURL();
@@ -425,7 +469,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             conn.setConnectTimeout(15000);  // 连接超时 15 秒
             conn.setReadTimeout(20000);     // 读取超时 20 秒
             conn.setRequestMethod("GET");
-            
+
             try (java.io.InputStream is = conn.getInputStream()) {
                 BufferedImage img = ImageIO.read(is);
                 if (img != null) {

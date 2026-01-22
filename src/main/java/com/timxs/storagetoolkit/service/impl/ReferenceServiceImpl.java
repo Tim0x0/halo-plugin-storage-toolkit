@@ -80,13 +80,11 @@ public class ReferenceServiceImpl implements ReferenceService {
     private static final GroupVersionKind DOC_GVK = 
         new GroupVersionKind("doc.halo.run", "v1alpha1", "Doc");
     // Docsme 文档项目 GVK (doc.halo.run/v1alpha1/Project)
-    private static final GroupVersionKind PROJECT_GVK = 
+    private static final GroupVersionKind PROJECT_GVK =
         new GroupVersionKind("doc.halo.run", "v1alpha1", "Project");
 
-    /**
-     * 默认扫描超时时间（分钟）
-     */
-    private static final int DEFAULT_SCAN_TIMEOUT_MINUTES = 5;
+    // 内存中的扫描标志（用于检测服务重启）
+    private final AtomicInteger scanningFlag = new AtomicInteger(0);
 
     @Override
     public Mono<ReferenceScanStatus> startScan() {
@@ -95,17 +93,12 @@ public class ReferenceServiceImpl implements ReferenceService {
                 // 检查是否正在扫描
                 if (status.getStatus() != null
                     && ReferenceScanStatus.Phase.SCANNING.equals(status.getStatus().getPhase())) {
-                    // 检查是否超时
-                    return settingsManager.getExcludeSettings()
-                        .map(SettingsManager.ExcludeSettings::scanTimeoutMinutes)
-                        .flatMap(timeout -> {
-                            if (!isStuck(status.getStatus().getStartTime(), timeout)) {
-                                return Mono.error(new IllegalStateException("扫描正在进行中"));
-                            }
-                            // 超时，允许重新扫描
-                            log.warn("上次扫描超时，允许重新触发");
-                            return doStartScan(status);
-                        });
+                    // 检查内存标志：如果为 0 说明服务重启过，允许重新扫描
+                    if (scanningFlag.get() == 0) {
+                        log.warn("检测到服务重启，上次扫描已中断，允许重新触发");
+                        return doStartScan(status);
+                    }
+                    return Mono.error(new IllegalStateException("扫描正在进行中"));
                 }
                 return doStartScan(status);
             });
@@ -115,6 +108,9 @@ public class ReferenceServiceImpl implements ReferenceService {
      * 执行扫描
      */
     private Mono<ReferenceScanStatus> doStartScan(ReferenceScanStatus status) {
+        // 设置内存扫描标志
+        scanningFlag.set(1);
+
         // 更新状态为扫描中
         if (status.getStatus() == null) {
             status.setStatus(new ReferenceScanStatus.ReferenceScanStatusStatus());
@@ -127,6 +123,7 @@ public class ReferenceServiceImpl implements ReferenceService {
             .flatMap(updated -> {
                 // 异步执行扫描
                 performScan(updated)
+                    .doFinally(signal -> scanningFlag.set(0))  // 扫描结束时清除标志
                     .subscribe(
                         result -> log.info("扫描完成: {}", result),
                         error -> {
@@ -905,6 +902,7 @@ public class ReferenceServiceImpl implements ReferenceService {
         return settingsManager.getExcludeSettings()
             .flatMapMany(excludeSettings ->
                 client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted())
+                    .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
                     .filter(attachment -> {
                         // 过滤排除的分组
                         String groupName = attachment.getSpec().getGroupName();
@@ -1196,7 +1194,9 @@ public class ReferenceServiceImpl implements ReferenceService {
             );
         
         return Mono.zip(
-            client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted()).collectList(),
+            client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted())
+                .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
+                .collectList(),
             refMapMono,
             settingsManager.getExcludeSettings()
         ).map(tuple -> {
@@ -1253,7 +1253,8 @@ public class ReferenceServiceImpl implements ReferenceService {
     @Override
     public Mono<AttachmentReferenceVo> getReference(String attachmentName) {
         return client.fetch(Attachment.class, attachmentName)
-            .flatMap(attachment -> 
+            .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
+            .flatMap(attachment ->
                 // 通过 spec.attachmentName 查找，过滤掉待删除的记录
                 findReferenceByAttachmentName(attachmentName)
                     .map(ref -> createVo(attachment, ref))
@@ -1546,16 +1547,6 @@ public class ReferenceServiceImpl implements ReferenceService {
     }
 
     /**
-     * 检查扫描是否超时
-     */
-    private boolean isStuck(Instant startTime, int timeoutMinutes) {
-        if (startTime == null) {
-            return true;
-        }
-        return Duration.between(startTime, Instant.now()).toMinutes() > timeoutMinutes;
-    }
-
-    /**
      * URL 解码
      * 处理 %20、%E4%B8%AD 等编码
      */
@@ -1598,6 +1589,7 @@ public class ReferenceServiceImpl implements ReferenceService {
                                                      AtomicInteger deletedCount,
                                                      AtomicLong freedSize) {
         return client.fetch(Attachment.class, attachmentName)
+            .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
             .flatMap(attachment -> {
                 String displayName = attachment.getSpec().getDisplayName();
                 long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;

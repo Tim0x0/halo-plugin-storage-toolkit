@@ -72,6 +72,7 @@ public class DuplicateGroupVo {
         private String groupName;
         private String groupDisplayName;
         private String policyName;
+        private String policyDisplayName;
         private int referenceCount;
         private boolean isRecommended;
     }

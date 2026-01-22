@@ -181,8 +181,9 @@ public class CleanupEndpoint {
         var attachmentNames = request.attachmentNames();
 
         // 计算总大小
-        Mono<Long> totalSizeMono = client.listAll(run.halo.app.core.extension.attachment.Attachment.class, 
+        Mono<Long> totalSizeMono = client.listAll(run.halo.app.core.extension.attachment.Attachment.class,
                 ListOptions.builder().build(), Sort.unsorted())
+            .filter(att -> att.getMetadata().getDeletionTimestamp() == null)
             .filter(att -> attachmentNames.contains(att.getMetadata().getName()))
             .map(att -> att.getSpec().getSize() != null ? att.getSpec().getSize() : 0L)
             .reduce(0L, Long::sum);

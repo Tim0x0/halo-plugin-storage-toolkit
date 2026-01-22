@@ -58,6 +58,7 @@ public class OverviewEndpoint {
      */
     private Mono<AttachmentStats> getAttachmentStats() {
         return client.listAll(Attachment.class, null, Sort.unsorted())
+            .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
             .reduce(new AttachmentStats(), (stats, attachment) -> {
                 stats.setCount(stats.getCount() + 1);
                 

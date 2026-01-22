@@ -98,11 +98,11 @@ public interface SettingsManager {
     record ExcludeSettings(
         java.util.Set<String> excludeGroups,
         java.util.Set<String> excludePolicies,
-        int scanTimeoutMinutes,
+        int md5TimeoutSeconds,
         int duplicateScanConcurrency
     ) {
         public static ExcludeSettings defaultSettings() {
-            return new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), 5, 4);
+            return new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), 90, 4);
         }
     }
 

@@ -46,7 +46,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 批量处理服务实现
@@ -71,6 +74,17 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     /** 任务 ID 格式 */
     private static final DateTimeFormatter TASK_ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
 
+    // ========== 内存中的进度数据（不持久化，重启后清零）==========
+    private final AtomicInteger memTotal = new AtomicInteger(0);
+    private final AtomicInteger memProcessed = new AtomicInteger(0);
+    private final AtomicInteger memSucceeded = new AtomicInteger(0);
+    private final AtomicInteger memFailed = new AtomicInteger(0);
+    private final AtomicInteger memSkipped = new AtomicInteger(0);
+    private final AtomicLong memSavedBytes = new AtomicLong(0);
+    private final AtomicInteger memKeptOriginal = new AtomicInteger(0);
+    private final ConcurrentLinkedQueue<FailedItem> memFailedItems = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<SkippedItem> memSkippedItems = new ConcurrentLinkedQueue<>();
+
     @Override
     public Mono<BatchProcessingStatus> createTask(List<String> attachmentNames) {
         if (attachmentNames == null || attachmentNames.isEmpty()) {
@@ -81,9 +95,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
         return settingsManager.getConfig()
             .flatMap(config -> {
                 // 检查是否有任何处理功能启用
-                boolean hasProcessing = config.getWatermark().isEnabled()
-                    || config.getFormatConversion().isEnabled();
-                if (!hasProcessing) {
+                if (!imageProcessor.hasProcessingEnabled(config)) {
                     return Mono.error(new IllegalStateException("没有启用任何处理功能（水印或格式转换），请先在插件设置中启用"));
                 }
 
@@ -93,12 +105,18 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                         if (status.getStatus() != null) {
                             Phase phase = status.getStatus().getPhase();
                             if (phase == Phase.PENDING || phase == Phase.PROCESSING) {
-                                return Mono.error(new IllegalStateException("已有任务正在执行中"));
+                                // 检查内存进度：如果都为 0 说明服务重启过，允许重新开始
+                                if (memProcessed.get() == 0 && memTotal.get() == 0) {
+                                    log.warn("检测到服务重启，上次任务已中断，允许重新开始");
+                                } else {
+                                    return Mono.error(new IllegalStateException("已有任务正在执行中"));
+                                }
                             }
                         }
 
-                        // 重置取消标志
+                        // 重置取消标志和内存进度
                         cancelRequested.set(false);
+                        resetMemoryProgress(attachmentNames.size());
 
                         // 生成任务 ID
                         String taskId = LocalDateTime.now().format(TASK_ID_FORMAT);
@@ -223,6 +241,9 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                                              boolean enableRemote,
                                              SecurityContext securityContext) {
         return client.fetch(Attachment.class, attachmentName)
+            .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
+            .switchIfEmpty(Mono.defer(() -> recordSkipped(attachmentName, attachmentName, 0, "文件不存在或已删除")
+                .then(Mono.empty())))
             .flatMap(attachment -> {
                 String displayName = attachment.getSpec().getDisplayName();
                 String mediaType = attachment.getSpec().getMediaType();
@@ -232,19 +253,21 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 // 检查是否为远程存储
                 return isRemoteStorage(policyName)
                     .flatMap(isRemote -> {
+                        long size = fileSize != null ? fileSize : 0;
+
                         if (isRemote && !enableRemote) {
-                            return recordSkipped(attachmentName, displayName, "远程存储未启用");
+                            return recordSkipped(attachmentName, displayName, size, "远程存储未启用");
                         }
 
                         // 检查文件格式是否在允许列表中
                         if (!imageProcessor.isAllowedFormat(mediaType, config)) {
-                            return recordSkipped(attachmentName, displayName, "文件格式不在允许列表中");
+                            return recordSkipped(attachmentName, displayName, size, "文件格式不在允许列表中");
                         }
 
                         // 检查文件大小是否满足条件
-                        if (!imageProcessor.shouldProcess(mediaType, fileSize != null ? fileSize : 0, config)) {
-                            String reason = imageProcessor.getSkipReason(mediaType, fileSize != null ? fileSize : 0, config);
-                            return recordSkipped(attachmentName, displayName, reason);
+                        if (!imageProcessor.shouldProcess(mediaType, size, config)) {
+                            String reason = imageProcessor.getSkipReason(mediaType, size, config);
+                            return recordSkipped(attachmentName, displayName, size, reason);
                         }
 
                         // 下载并处理图片
@@ -280,7 +303,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
             .flatMap(imageData -> imageProcessor.process(imageData, displayName, mediaType, config))
             .flatMap(result -> {
                 if (result.status() == ProcessingStatus.SKIPPED) {
-                    return recordSkipped(attachmentName, displayName, result.message());
+                    return recordSkipped(attachmentName, displayName, originalSize, result.message());
                 }
                 if (result.status() == ProcessingStatus.FAILED) {
                     return recordFailed(attachmentName, displayName, result.message());
@@ -430,96 +453,118 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
 
 
     /**
-     * 记录成功（带乐观锁重试）
+     * 记录成功（只更新内存）
      */
     private Mono<Void> recordSucceeded(String attachmentName, String displayName, long savedBytes, boolean keepOriginal) {
-        return updateStatusWithRetry(status -> {
-            Progress progress = status.getStatus().getProgress();
-            progress.setProcessed(progress.getProcessed() + 1);
-            progress.setSucceeded(progress.getSucceeded() + 1);
-            status.getStatus().setSavedBytes(status.getStatus().getSavedBytes() + savedBytes);
-            if (keepOriginal) {
-                status.getStatus().setKeptOriginalCount(status.getStatus().getKeptOriginalCount() + 1);
-            }
-        });
+        memProcessed.incrementAndGet();
+        memSucceeded.incrementAndGet();
+        memSavedBytes.addAndGet(savedBytes);
+        if (keepOriginal) {
+            memKeptOriginal.incrementAndGet();
+        }
+        return Mono.empty();
     }
 
     /**
-     * 记录失败（带乐观锁重试）
+     * 记录失败（只更新内存）
      */
     private Mono<Void> recordFailed(String attachmentName, String displayName, String error) {
-        return updateStatusWithRetry(status -> {
-            Progress progress = status.getStatus().getProgress();
-            progress.setProcessed(progress.getProcessed() + 1);
-            progress.setFailed(progress.getFailed() + 1);
-            
-            FailedItem failedItem = new FailedItem();
-            failedItem.setAttachmentName(attachmentName);
-            failedItem.setDisplayName(displayName);
-            failedItem.setError(error);
-            status.getStatus().getFailedItems().add(failedItem);
-        });
+        memProcessed.incrementAndGet();
+        memFailed.incrementAndGet();
+
+        FailedItem failedItem = new FailedItem();
+        failedItem.setAttachmentName(attachmentName);
+        failedItem.setDisplayName(displayName);
+        failedItem.setError(error);
+        memFailedItems.add(failedItem);
+        return Mono.empty();
     }
 
     /**
-     * 记录跳过（带乐观锁重试）
+     * 记录跳过（更新内存并写入日志）
      */
-    private Mono<Void> recordSkipped(String attachmentName, String displayName, String reason) {
+    private Mono<Void> recordSkipped(String attachmentName, String displayName, long fileSize, String reason) {
         log.debug("跳过附件 {}: {}", displayName, reason);
-        return updateStatusWithRetry(status -> {
-            Progress progress = status.getStatus().getProgress();
-            progress.setProcessed(progress.getProcessed() + 1);
-            // 跳过不计入成功，单独计数
-            status.getStatus().setSkippedCount(status.getStatus().getSkippedCount() + 1);
+        memProcessed.incrementAndGet();
+        memSkipped.incrementAndGet();
 
-            // 添加到跳过项列表
-            SkippedItem skippedItem = new SkippedItem();
-            skippedItem.setAttachmentName(attachmentName);
-            skippedItem.setDisplayName(displayName);
-            skippedItem.setReason(reason);
-            status.getStatus().getSkippedItems().add(skippedItem);
-        });
-    }
+        SkippedItem skippedItem = new SkippedItem();
+        skippedItem.setAttachmentName(attachmentName);
+        skippedItem.setDisplayName(displayName);
+        skippedItem.setReason(reason);
+        memSkippedItems.add(skippedItem);
 
-    /**
-     * 带乐观锁重试的状态更新
-     * 解决并发更新时的竞态条件问题
-     */
-    private Mono<Void> updateStatusWithRetry(java.util.function.Consumer<BatchProcessingStatus> updater) {
-        return Mono.defer(() -> getStatus()
-            .flatMap(status -> {
-                updater.accept(status);
-                return client.update(status);
-            }))
-            .retryWhen(reactor.util.retry.Retry.backoff(5, java.time.Duration.ofMillis(50))
-                .maxBackoff(java.time.Duration.ofMillis(500))
-                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
-            .onErrorResume(e -> {
-                log.warn("状态更新最终失败（已重试5次）: {}", e.getMessage());
-                return Mono.empty();
-            })
+        // 写入 ProcessingLog
+        return processingLogService.saveSkippedLog(displayName, null, fileSize, Instant.now(), reason, "batch-processing")
             .then();
     }
 
     /**
-     * 完成任务
+     * 重置内存进度
+     */
+    private void resetMemoryProgress(int total) {
+        memTotal.set(total);
+        memProcessed.set(0);
+        memSucceeded.set(0);
+        memFailed.set(0);
+        memSkipped.set(0);
+        memSavedBytes.set(0);
+        memKeptOriginal.set(0);
+        memFailedItems.clear();
+        memSkippedItems.clear();
+    }
+
+    /**
+     * 清空内存进度
+     */
+    private void clearMemoryProgress() {
+        memTotal.set(0);
+        memProcessed.set(0);
+        memSucceeded.set(0);
+        memFailed.set(0);
+        memSkipped.set(0);
+        memSavedBytes.set(0);
+        memKeptOriginal.set(0);
+        memFailedItems.clear();
+        memSkippedItems.clear();
+    }
+
+    /**
+     * 完成任务（持久化内存数据到数据库）
      */
     private Mono<BatchProcessingStatus> finalizeTask(String taskId) {
         return getStatus()
             .flatMap(status -> {
+                // 将内存数据持久化到状态对象
+                Progress progress = status.getStatus().getProgress();
+                progress.setTotal(memTotal.get());
+                progress.setProcessed(memProcessed.get());
+                progress.setSucceeded(memSucceeded.get());
+                progress.setFailed(memFailed.get());
+                status.getStatus().setSkippedCount(memSkipped.get());
+                status.getStatus().setSavedBytes(memSavedBytes.get());
+                status.getStatus().setKeptOriginalCount(memKeptOriginal.get());
+
+                // 持久化失败和跳过项列表
+                status.getStatus().getFailedItems().addAll(memFailedItems);
+                status.getStatus().getSkippedItems().addAll(memSkippedItems);
+
                 if (cancelRequested.get()) {
                     status.getStatus().setPhase(Phase.CANCELLED);
                 } else {
                     status.getStatus().setPhase(Phase.COMPLETED);
                 }
                 status.getStatus().setEndTime(Instant.now());
-                
-                log.info("批量处理任务 {} 完成, 状态: {}, 进度: {}/{}", 
-                    taskId, 
+
+                log.info("批量处理任务 {} 完成, 状态: {}, 进度: {}/{}",
+                    taskId,
                     status.getStatus().getPhase(),
-                    status.getStatus().getProgress().getProcessed(),
-                    status.getStatus().getProgress().getTotal());
-                
+                    memProcessed.get(),
+                    memTotal.get());
+
+                // 清空内存进度
+                clearMemoryProgress();
+
                 return client.update(status);
             });
     }
@@ -569,7 +614,25 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 status.setSpec(new BatchProcessingStatusSpec());
                 status.setStatus(new BatchProcessingStatusStatus());
                 return client.create(status);
-            }));
+            }))
+            .map(status -> {
+                // 如果任务正在处理中，注入内存中的实时进度
+                if (status.getStatus() != null &&
+                    (status.getStatus().getPhase() == Phase.PROCESSING ||
+                     status.getStatus().getPhase() == Phase.PENDING)) {
+                    Progress progress = status.getStatus().getProgress();
+                    if (progress != null) {
+                        progress.setTotal(memTotal.get());
+                        progress.setProcessed(memProcessed.get());
+                        progress.setSucceeded(memSucceeded.get());
+                        progress.setFailed(memFailed.get());
+                    }
+                    status.getStatus().setSkippedCount(memSkipped.get());
+                    status.getStatus().setSavedBytes(memSavedBytes.get());
+                    status.getStatus().setKeptOriginalCount(memKeptOriginal.get());
+                }
+                return status;
+            });
     }
 
     @Override

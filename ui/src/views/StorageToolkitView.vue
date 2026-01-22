@@ -78,6 +78,11 @@ onMounted(() => {
   if (tabFromUrl && tabs.some(t => t.id === tabFromUrl)) {
     currentTab.value = tabFromUrl
     localStorage.setItem(STORAGE_KEY, tabFromUrl)
+  } else if (tabFromUrl === 'overview') {
+    // 兼容旧 URL：overview -> statistics，同步更新 URL
+    currentTab.value = 'statistics'
+    localStorage.setItem(STORAGE_KEY, 'statistics')
+    router.replace({ query: { ...route.query, tab: 'statistics' } })
   } else {
     // 否则使用 localStorage
     const savedTab = localStorage.getItem(STORAGE_KEY)

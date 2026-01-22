@@ -80,6 +80,7 @@ public class StatisticsServiceImpl implements StatisticsService {
                 Map<String, String> groupNames = tuple.getT2();
                 
                 return client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted())
+                    .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
                     .reduce(new AggregationState(), (state, attachment) -> {
                         if (attachment.getSpec() == null) return state;
                         

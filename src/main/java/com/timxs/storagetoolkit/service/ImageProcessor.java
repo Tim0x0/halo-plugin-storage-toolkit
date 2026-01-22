@@ -52,4 +52,12 @@ public interface ImageProcessor {
      * @return 是否是允许处理的格式
      */
     boolean isAllowedFormat(String contentType, ProcessingConfig config);
+
+    /**
+     * 检查是否有任何处理功能启用（水印或格式转换）
+     *
+     * @param config 处理配置
+     * @return 是否有处理功能启用
+     */
+    boolean hasProcessingEnabled(ProcessingConfig config);
 }

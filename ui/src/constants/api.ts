@@ -4,6 +4,9 @@
 const API_PREFIX = '/apis/console.api.storage-toolkit.timxs.com/v1alpha1'
 
 export const API_ENDPOINTS = {
+  // 统计
+  STATISTICS: `${API_PREFIX}/statistics`,
+
   // 白名单
   WHITELIST: `${API_PREFIX}/whitelist`,
   WHITELIST_SEARCH: `${API_PREFIX}/whitelist/search`,

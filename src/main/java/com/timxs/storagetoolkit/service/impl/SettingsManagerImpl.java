@@ -379,7 +379,7 @@ public class SettingsManagerImpl implements SettingsManager {
             .map(setting -> {
                 java.util.Set<String> excludeGroups = new java.util.HashSet<>();
                 java.util.Set<String> excludePolicies = new java.util.HashSet<>();
-                int scanTimeoutMinutes = 5;
+                int md5TimeoutSeconds = 90;
                 int duplicateScanConcurrency = 4;
 
                 JsonNode analysisExclude = setting.get("analysisExclude");
@@ -390,15 +390,15 @@ public class SettingsManagerImpl implements SettingsManager {
                     List<String> policies = getStringList(analysisExclude, "excludePolicies");
                     if (policies != null) excludePolicies.addAll(policies);
 
-                    // 添加范围校验：超时时间 1-60 分钟
-                    int timeout = getInt(analysisExclude, "scanTimeoutMinutes", 5);
-                    scanTimeoutMinutes = Math.max(1, Math.min(60, timeout));
+                    // 添加范围校验：MD5 计算超时 30-300 秒
+                    int timeout = getInt(analysisExclude, "md5TimeoutSeconds", 90);
+                    md5TimeoutSeconds = Math.max(30, Math.min(300, timeout));
 
                     // 添加范围校验：并发数 1-10
                     int concurrency = getInt(analysisExclude, "duplicateScanConcurrency", 4);
                     duplicateScanConcurrency = Math.max(1, Math.min(10, concurrency));
                 }
-                return new ExcludeSettings(excludeGroups, excludePolicies, scanTimeoutMinutes, duplicateScanConcurrency);
+                return new ExcludeSettings(excludeGroups, excludePolicies, md5TimeoutSeconds, duplicateScanConcurrency);
             })
             .defaultIfEmpty(ExcludeSettings.defaultSettings())
             .onErrorReturn(ExcludeSettings.defaultSettings());

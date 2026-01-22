@@ -2,6 +2,8 @@ package com.timxs.storagetoolkit.service.impl;
 
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.model.ProcessingLogQuery;
+import com.timxs.storagetoolkit.model.ProcessingResult;
+import com.timxs.storagetoolkit.model.ProcessingStatus;
 import com.timxs.storagetoolkit.service.ProcessingLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -48,6 +50,76 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
             processingLog.getMetadata().setName(UUID.randomUUID().toString());
         }
         return client.create(processingLog);
+    }
+
+    /**
+     * 保存跳过日志
+     *
+     * @param filename    文件名
+     * @param contentType 文件 MIME 类型
+     * @param fileSize    文件大小
+     * @param startTime   开始时间
+     * @param reason      跳过原因
+     * @param source      来源
+     * @return 保存后的日志对象
+     */
+    @Override
+    public Mono<ProcessingLog> saveSkippedLog(String filename, String contentType, long fileSize,
+                                               Instant startTime, String reason, String source) {
+        ProcessingLog logEntry = new ProcessingLog();
+        ProcessingLog.ProcessingLogSpec spec = new ProcessingLog.ProcessingLogSpec();
+
+        spec.setOriginalFilename(filename);
+        spec.setResultFilename(filename);
+        spec.setOriginalSize(fileSize);
+        spec.setResultSize(fileSize);
+        spec.setStatus(ProcessingStatus.SKIPPED);
+        spec.setProcessedAt(startTime);
+        spec.setProcessingDuration(Instant.now().toEpochMilli() - startTime.toEpochMilli());
+        spec.setErrorMessage(reason);
+        spec.setSource(source);
+
+        logEntry.setSpec(spec);
+
+        return save(logEntry)
+            .doOnNext(saved -> log.debug("Skipped log saved: {}", saved.getMetadata().getName()))
+            .doOnError(error -> log.error("Failed to save skipped log", error));
+    }
+
+    /**
+     * 保存处理结果日志
+     *
+     * @param result           处理结果
+     * @param originalFilename 原始文件名
+     * @param originalSize     原始文件大小
+     * @param startTime        开始时间
+     * @param source           来源
+     * @return 保存后的日志对象
+     */
+    @Override
+    public Mono<ProcessingLog> saveResultLog(ProcessingResult result, String originalFilename,
+                                              long originalSize, Instant startTime, String source) {
+        ProcessingLog logEntry = new ProcessingLog();
+        ProcessingLog.ProcessingLogSpec spec = new ProcessingLog.ProcessingLogSpec();
+
+        spec.setOriginalFilename(originalFilename);
+        spec.setResultFilename(result.filename());
+        spec.setOriginalSize(originalSize);
+        spec.setResultSize(result.data().length);
+        spec.setStatus(result.status());
+        spec.setProcessedAt(startTime);
+        spec.setProcessingDuration(Instant.now().toEpochMilli() - startTime.toEpochMilli());
+        spec.setSource(source);
+
+        if (result.message() != null) {
+            spec.setErrorMessage(result.message());
+        }
+
+        logEntry.setSpec(spec);
+
+        return save(logEntry)
+            .doOnNext(saved -> log.debug("Processing log saved: {}", saved.getMetadata().getName()))
+            .doOnError(error -> log.error("Failed to save processing log", error));
     }
 
     /**

@@ -48,6 +48,8 @@ export interface DuplicateFile {
   groupDisplayName: string | null
   /** 存储策略名称 */
   policyName: string | null
+  /** 存储策略显示名称 */
+  policyDisplayName: string | null
   /** 引用次数 */
   referenceCount: number
   /** 是否推荐保留 */
