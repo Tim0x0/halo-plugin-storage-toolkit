@@ -1,18 +1,19 @@
 package com.timxs.storagetoolkit.service.impl;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.timxs.storagetoolkit.extension.AttachmentReference;
 import com.timxs.storagetoolkit.extension.DuplicateGroup;
 import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
+import com.timxs.storagetoolkit.model.CleanupReason;
 import com.timxs.storagetoolkit.model.CleanupResult;
 import com.timxs.storagetoolkit.model.DuplicateGroupVo;
+import com.timxs.storagetoolkit.service.CleanupLogService;
 import com.timxs.storagetoolkit.service.DuplicateService;
+import com.timxs.storagetoolkit.service.ReferenceReplacerService;
 import com.timxs.storagetoolkit.service.SettingsManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Sort;
-import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -46,8 +47,8 @@ public class DuplicateServiceImpl implements DuplicateService {
     private final ReactiveExtensionClient client;
     private final ExternalLinkProcessor externalLinkProcessor;
     private final SettingsManager settingsManager;
-
-    private static final int DEFAULT_DUPLICATE_SCAN_CONCURRENCY = 4;
+    private final ReferenceReplacerService referenceReplacerService;
+    private final CleanupLogService cleanupLogService;
 
     // 内存中的扫描进度（不持久化，重启后清零）
     private final AtomicInteger scanProgress = new AtomicInteger(0);
@@ -130,13 +131,14 @@ public class DuplicateServiceImpl implements DuplicateService {
 
         // 1. 先标记旧数据为待删除
         return markAllAsPendingDelete()
-            // 2. 获取存储策略、并发数配置、远程存储开关和 MD5 超时配置
-            .then(Mono.zip(getAllPolicyNames(), getDuplicateScanConcurrency(), settingsManager.getRemoteStorageForDuplicateScan(), getMd5TimeoutSeconds()))
+            // 2. 获取存储策略、并发数配置、远程存储开关、MD5 超时配置和排除设置
+            .then(Mono.zip(getAllPolicyNames(), getDuplicateScanConcurrency(), settingsManager.getRemoteStorageForDuplicateScan(), getMd5TimeoutSeconds(), settingsManager.getExcludeSettings()))
             .flatMap(tuple -> {
                 Map<String, Boolean> policyIsLocal = tuple.getT1();
                 int concurrency = tuple.getT2();
                 boolean enableRemote = tuple.getT3();
                 int md5Timeout = tuple.getT4();
+                SettingsManager.ExcludeSettings excludeSettings = tuple.getT5();
 
                 // 根据配置过滤策略
                 Set<String> allowedPolicies = policyIsLocal.entrySet().stream()
@@ -145,24 +147,37 @@ public class DuplicateServiceImpl implements DuplicateService {
                     .collect(Collectors.toSet());
 
                 if (allowedPolicies.isEmpty()) {
-                    log.info("没有可扫描的存储策略，跳过扫描");
+                    log.warn("没有可扫描的存储策略，跳过扫描");
                     return updateScanCompleted(0, 0, 0, 0);
                 }
-                log.info("可扫描的存储策略: {}, 并发数: {}, 远程存储: {}, MD5超时: {}秒", allowedPolicies, concurrency, enableRemote, md5Timeout);
+                log.debug("可扫描的存储策略: {}, 并发数: {}, 远程存储: {}, MD5超时: {}秒", allowedPolicies, concurrency, enableRemote, md5Timeout);
 
                 // 3. 获取附件
                 return client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted())
                     .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
+                    .filter(attachment -> {
+                        // 过滤排除的分组
+                        String groupName = attachment.getSpec().getGroupName();
+                        if (groupName != null && excludeSettings.excludeGroups().contains(groupName)) {
+                            return false;
+                        }
+                        // 过滤排除的存储策略
+                        String policyName = attachment.getSpec().getPolicyName();
+                        if (policyName != null && excludeSettings.excludePolicies().contains(policyName)) {
+                            return false;
+                        }
+                        return true;
+                    })
                     .filter(attachment -> allowedPolicies.contains(attachment.getSpec().getPolicyName()))
                     .collectList()
                     .flatMap(attachments -> {
                         // 设置内存进度总数
                         scanTotal.set(attachments.size());
                         scanProgress.set(0);
-                        log.info("找到 {} 个附件，开始计算 MD5...", scanTotal.get());
+                        log.debug("找到 {} 个附件，开始计算 MD5...", scanTotal.get());
 
                         if (attachments.isEmpty()) {
-                            log.info("没有附件，完成扫描");
+                            log.debug("没有附件，完成扫描");
                             return updateScanCompleted(0, 0, 0, 0);
                         }
 
@@ -170,7 +185,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                         return Flux.fromIterable(attachments)
                             .flatMap(attachment -> processAttachment(attachment, hashToAttachments, md5Timeout), concurrency)
                             .then(Mono.defer(() -> {
-                                log.info("MD5 计算完成，已处理: {}/{}", scanProgress.get(), scanTotal.get());
+                                log.debug("MD5 计算完成，已处理: {}/{}", scanProgress.get(), scanTotal.get());
 
                                 // 5. 获取引用次数并更新 AttachmentInfo
                                 return enrichWithReferenceCounts(hashToAttachments)
@@ -191,7 +206,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                                                     .mapToLong(list -> list.get(0).size * (list.size() - 1))
                                                     .sum();
 
-                                                log.info("扫描统计 - 重复组: {}, 重复文件: {}, 可节省: {} bytes",
+                                                log.debug("扫描统计 - 重复组: {}, 重复文件: {}, 可节省: {} bytes",
                                                     groupCount, fileCount, savableSize);
                                                 return updateScanCompleted(scanTotal.get(), groupCount, fileCount, savableSize);
                                             }));
@@ -200,7 +215,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                     });
             })
             .doOnSuccess(s -> {
-                log.info("扫描流程完成，开始清理旧数据");
+                log.debug("扫描流程完成，开始清理旧数据");
                 // 异步删除旧数据
                 asyncDeletePendingRecords();
             })
@@ -229,7 +244,7 @@ public class DuplicateServiceImpl implements DuplicateService {
             return Mono.empty();
         }
 
-        return calculateMd5(permalink)
+        return calculateMd5(permalink, md5TimeoutSeconds)
             .timeout(java.time.Duration.ofSeconds(md5TimeoutSeconds))
             .doOnNext(md5 -> {
                 AttachmentInfo info = new AttachmentInfo(attachmentName, displayName, fileSize, uploadTime, 0);
@@ -239,7 +254,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                 // 无论成功失败都更新进度
                 int count = scanProgress.incrementAndGet();
                 if (count % 50 == 0) {
-                    log.info("已处理 {}/{} 个附件...", count, scanTotal.get());
+                    log.debug("已处理 {}/{} 个附件...", count, scanTotal.get());
                 }
             })
             .doOnError(e -> log.warn("计算附件 {} MD5 失败: {}", displayName, e.getMessage()))
@@ -250,19 +265,20 @@ public class DuplicateServiceImpl implements DuplicateService {
     /**
      * 流式计算文件 MD5（通过 HTTP 获取文件内容）
      */
-    private Mono<String> calculateMd5(String permalink) {
+    private Mono<String> calculateMd5(String permalink, int timeoutSeconds) {
         return Mono.fromCallable(() -> {
             // 使用 ExternalLinkProcessor 将相对路径转为完整 URL
             String fullUrl = externalLinkProcessor.processLink(permalink);
-            
+
             HttpURLConnection conn = null;
             try {
                 URL url = new URL(fullUrl);
                 conn = (HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(10000);  // 连接超时 10 秒
-                conn.setReadTimeout(30000);     // 读取超时 30 秒
+                // 使用配置的超时时间：连接超时取 1/3，最大 30 秒；读取超时使用完整配置
+                conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(timeoutSeconds));
+                conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(timeoutSeconds));
                 conn.setRequestMethod("GET");
-                
+
                 int responseCode = conn.getResponseCode();
                 if (responseCode != 200) {
                     throw new RuntimeException("HTTP " + responseCode);
@@ -317,7 +333,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                 return client.update(group);
             })
             .then()
-            .doOnSuccess(v -> log.info("已标记所有旧 DuplicateGroup 为待删除"));
+            .doOnSuccess(v -> log.debug("已标记所有旧 DuplicateGroup 为待删除"));
     }
 
     /**
@@ -330,7 +346,7 @@ public class DuplicateServiceImpl implements DuplicateService {
             .subscribe(
                 deleted -> {},
                 error -> log.error("删除旧 DuplicateGroup 失败", error),
-                () -> log.info("旧 DuplicateGroup 清理完成")
+                () -> log.debug("旧 DuplicateGroup 清理完成")
             );
     }
 
@@ -350,7 +366,7 @@ public class DuplicateServiceImpl implements DuplicateService {
             return Mono.empty();
         }
 
-        log.info("查询 {} 个附件的引用次数...", attachmentNames.size());
+        log.debug("查询 {} 个附件的引用次数...", attachmentNames.size());
 
         // 批量获取引用次数
         return client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
@@ -382,7 +398,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                         }
                     }
                 }
-                log.info("引用次数查询完成，更新了 {} 个附件", refCountMap.size());
+                log.debug("引用次数查询完成，更新了 {} 个附件", refCountMap.size());
             })
             .then();
     }
@@ -424,7 +440,7 @@ public class DuplicateServiceImpl implements DuplicateService {
     }
 
     /**
-     * 选择推荐保留的文件（引用次数最多，相同则选最早上传的）
+     * 选择推荐保留的文件（引用次数最多，相同则选最晚上传的）
      */
     private String selectRecommendedKeep(List<AttachmentInfo> attachments) {
         return attachments.stream()
@@ -487,8 +503,9 @@ public class DuplicateServiceImpl implements DuplicateService {
                 return client.create(status);
             }))
             .map(status -> {
-                // 注入内存中的扫描进度
-                if (status.getStatus() != null) {
+                // 只在 SCANNING 阶段注入内存进度，其他阶段使用数据库持久化值
+                if (status.getStatus() != null
+                    && DuplicateScanStatus.Phase.SCANNING.equals(status.getStatus().getPhase())) {
                     status.getStatus().setScannedCount(scanProgress.get());
                     status.getStatus().setTotalCount(scanTotal.get());
                 }
@@ -531,15 +548,15 @@ public class DuplicateServiceImpl implements DuplicateService {
                     .filter(att -> allAttachmentNames.contains(att.getMetadata().getName()))
                     .collectMap(att -> att.getMetadata().getName(), att -> att);
 
-                // 通过 spec.attachmentName 关联附件
-                Mono<Map<String, Integer>> referenceCountsMono = client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
+                // 通过 spec.attachmentName 关联附件，获取完整引用信息
+                Mono<Map<String, AttachmentReference>> referencesMono = client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
                     .filter(ref -> ref.getSpec() != null
                         && ref.getSpec().getAttachmentName() != null
                         && allAttachmentNames.contains(ref.getSpec().getAttachmentName())
                         && (ref.getStatus() == null || !Boolean.TRUE.equals(ref.getStatus().getPendingDelete())))
                     .collectMap(
                         ref -> ref.getSpec().getAttachmentName(),
-                        ref -> ref.getStatus() != null ? ref.getStatus().getReferenceCount() : 0
+                        ref -> ref
                     );
 
                 // 批量获取分组和存储策略信息
@@ -555,16 +572,16 @@ public class DuplicateServiceImpl implements DuplicateService {
                         && scanStatus.getStatus().getLastScanTime() != null)
                     .defaultIfEmpty(false);
 
-                return Mono.zip(attachmentsMono, referenceCountsMono, hasReferenceScanMono, groupsMono, policiesMono)
+                return Mono.zip(attachmentsMono, referencesMono, hasReferenceScanMono, groupsMono, policiesMono)
                     .map(tuple -> {
                         Map<String, Attachment> attachmentMap = tuple.getT1();
-                        Map<String, Integer> referenceCountMap = tuple.getT2();
+                        Map<String, AttachmentReference> referenceMap = tuple.getT2();
                         boolean hasReferenceScan = tuple.getT3();
                         Map<String, String> groupMap = tuple.getT4();
                         Map<String, String> policyMap = tuple.getT5();
 
                         List<DuplicateGroupVo> voList = pageItems.stream()
-                            .map(group -> convertToVo(group, attachmentMap, referenceCountMap, hasReferenceScan, groupMap, policyMap))
+                            .map(group -> convertToVo(group, attachmentMap, referenceMap, hasReferenceScan, groupMap, policyMap))
                             .collect(Collectors.toList());
                         return new ListResult<>(page, size, total, voList);
                     });
@@ -576,7 +593,7 @@ public class DuplicateServiceImpl implements DuplicateService {
      */
     private DuplicateGroupVo convertToVo(DuplicateGroup group,
                                           Map<String, Attachment> attachmentMap,
-                                          Map<String, Integer> referenceCountMap,
+                                          Map<String, AttachmentReference> referenceMap,
                                           boolean hasReferenceScan,
                                           Map<String, String> groupMap,
                                           Map<String, String> policyMap) {
@@ -612,9 +629,14 @@ public class DuplicateServiceImpl implements DuplicateService {
                     }
 
                     // 从引用扫描结果获取引用次数，没有扫描数据时设为 -1 表示未扫描
-                    fileVo.setReferenceCount(hasReferenceScan
-                        ? referenceCountMap.getOrDefault(attachmentName, 0)
-                        : -1);
+                    AttachmentReference attachmentRef = referenceMap.get(attachmentName);
+                    if (hasReferenceScan && attachmentRef != null && attachmentRef.getStatus() != null) {
+                        fileVo.setReferenceCount(attachmentRef.getStatus().getReferenceCount());
+                        // 设置引用列表
+                        fileVo.setReferences(attachmentRef.getStatus().getReferences());
+                    } else {
+                        fileVo.setReferenceCount(hasReferenceScan ? 0 : -1);
+                    }
 
                     // 设置预览 URL 和媒体类型（使用第一个文件的）
                     if (previewUrl == null && attachment.getStatus() != null) {
@@ -678,12 +700,15 @@ public class DuplicateServiceImpl implements DuplicateService {
     }
 
     @Override
-    public Mono<CleanupResult> deleteDuplicates(String groupMd5, List<String> attachmentNames) {
+    public Mono<CleanupResult> deleteDuplicates(String groupMd5, List<String> attachmentNames, Boolean replaceReferences) {
         if (attachmentNames == null || attachmentNames.isEmpty()) {
             return Mono.error(new IllegalArgumentException("附件列表不能为空"));
         }
 
-        log.info("删除重复文件 - groupMd5: {}, 附件数: {}", groupMd5, attachmentNames.size());
+        // 默认值为 true（保持向后兼容）
+        boolean shouldReplace = replaceReferences == null || replaceReferences;
+
+        log.info("删除重复文件 - groupMd5: {}, 附件数: {}, 替换引用: {}", groupMd5, attachmentNames.size(), shouldReplace);
 
         // 查找重复组
         return client.listAll(DuplicateGroup.class, ListOptions.builder().build(), Sort.unsorted())
@@ -705,91 +730,97 @@ public class DuplicateServiceImpl implements DuplicateService {
                     return Mono.error(new IllegalArgumentException("每个重复组至少需要保留一个文件"));
                 }
 
-                // 执行删除
+                // 确定保留的附件（用于引用替换）
+                List<String> remainingAttachments = groupAttachments.stream()
+                    .filter(name -> !toDelete.contains(name))
+                    .toList();
+                String keptAttachmentName = remainingAttachments.isEmpty() ? null : remainingAttachments.get(0);
+
+                // 执行删除（先合并引用，再删除）
                 List<String> errors = Collections.synchronizedList(new ArrayList<>());
                 AtomicInteger deletedCount = new AtomicInteger(0);
                 java.util.concurrent.atomic.AtomicLong freedSize = new java.util.concurrent.atomic.AtomicLong(0);
 
                 return Flux.fromIterable(attachmentNames)
-                    .flatMap(attachmentName -> deleteAttachmentAndLog(attachmentName, groupMd5, errors, deletedCount, freedSize))
-                    .then(Mono.defer(() -> updateDuplicateGroupAfterDelete(group, attachmentNames)))
-                    .then(Mono.defer(() -> updateScanStatusAfterDelete(deletedCount.get(), freedSize.get())))
-                    .thenReturn(new CleanupResult(
+                    .flatMap(attachmentName -> deleteAttachmentWithMerge(attachmentName, keptAttachmentName, shouldReplace, errors, deletedCount, freedSize))
+                    .then(Mono.defer(() -> updateDuplicateGroupAfterDelete(group, attachmentNames)
+                        .onErrorResume(e -> {
+                            log.warn("更新重复组失败: {}", e.getMessage());
+                            return Mono.empty();
+                        })))
+                    .then(Mono.defer(() -> updateScanStatusAfterDelete(deletedCount.get(), freedSize.get())
+                        .onErrorResume(e -> {
+                            log.warn("更新扫描状态失败: {}", e.getMessage());
+                            return Mono.empty();
+                        })))
+                    .then(Mono.fromCallable(() -> new CleanupResult(
                         deletedCount.get(),
                         attachmentNames.size() - deletedCount.get(),
                         freedSize.get(),
                         errors
-                    ));
+                    )));
             });
     }
 
     /**
-     * 删除单个附件并记录日志
+     * 删除单个附件并合并引用（如指定了保留附件）
      */
-    private Mono<Void> deleteAttachmentAndLog(String attachmentName,
-                                               String groupMd5,
-                                               List<String> errors,
-                                               AtomicInteger deletedCount,
-                                               java.util.concurrent.atomic.AtomicLong freedSize) {
+    private Mono<Void> deleteAttachmentWithMerge(String attachmentName,
+                                                   String keptAttachmentName,
+                                                   boolean shouldReplace,
+                                                   List<String> errors,
+                                                   AtomicInteger deletedCount,
+                                                   java.util.concurrent.atomic.AtomicLong freedSize) {
         return client.fetch(Attachment.class, attachmentName)
             .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
             .flatMap(attachment -> {
                 String displayName = attachment.getSpec().getDisplayName();
                 long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
+                String deletedPermalink = attachment.getStatus() != null ? attachment.getStatus().getPermalink() : null;
 
-                return client.delete(attachment)
-                    .then(createCleanupLog(attachmentName, displayName, fileSize, "DUPLICATE", null))
+                // 如果需要合并引用，先执行引用替换
+                Mono<Void> mergeReferencesMono = Mono.empty();
+                if (shouldReplace && keptAttachmentName != null && !keptAttachmentName.equals(attachmentName)) {
+                    mergeReferencesMono = client.fetch(Attachment.class, keptAttachmentName)
+                        .flatMap(keptAttachment -> {
+                            String keptPermalink = keptAttachment.getStatus() != null ? keptAttachment.getStatus().getPermalink() : null;
+                            if (deletedPermalink != null && keptPermalink != null) {
+                                return referenceReplacerService.mergeReferencesBeforeDelete(
+                                        attachmentName, keptAttachmentName, deletedPermalink, keptPermalink)
+                                    .doOnSuccess(replaceResult -> {
+                                        if (replaceResult.getUpdatedSources() > 0) {
+                                            log.debug("删除重复附件前引用合并完成：{} -> {}，共更新 {} 个内容源",
+                                                attachmentName, keptAttachmentName, replaceResult.getUpdatedSources());
+                                        }
+                                    })
+                                    .doOnError(e -> log.warn("删除重复附件前引用合并失败: {}", e.getMessage()))
+                                    .onErrorResume(e -> Mono.empty()) // 引用合并失败不应影响主流程
+                                    .then();
+                            }
+                            return Mono.empty();
+                        })
+                        .onErrorResume(e -> {
+                            log.warn("获取保留附件 {} 失败: {}", keptAttachmentName, e.getMessage());
+                            return Mono.empty();
+                        });
+                }
+
+                // 先合并引用，再删除附件
+                return mergeReferencesMono
+                    .then(client.delete(attachment))
+                    .then(cleanupLogService.saveLog(attachmentName, displayName, fileSize, CleanupReason.DUPLICATE, null))
                     .doOnSuccess(v -> {
                         deletedCount.incrementAndGet();
                         freedSize.addAndGet(fileSize);
-                        log.info("已删除重复文件: {}", displayName);
-                    });
+                        log.debug("已删除重复文件: {}", displayName);
+                    })
+                    .then();
             })
             .onErrorResume(e -> {
                 log.error("删除附件 {} 失败: {}", attachmentName, e.getMessage());
                 errors.add(attachmentName + ": " + e.getMessage());
                 return Mono.empty();
             });
-    }
-
-    /**
-     * 创建清理日志
-     */
-    private Mono<Void> createCleanupLog(String attachmentName, 
-                                         String displayName, 
-                                         long size, 
-                                         String reason,
-                                         String errorMessage) {
-        return getCurrentUsername()
-            .flatMap(operator -> {
-                com.timxs.storagetoolkit.extension.CleanupLog log = new com.timxs.storagetoolkit.extension.CleanupLog();
-                log.setMetadata(new Metadata());
-                log.getMetadata().setGenerateName("cleanup-log-");
-
-                com.timxs.storagetoolkit.extension.CleanupLog.CleanupLogSpec spec = 
-                    new com.timxs.storagetoolkit.extension.CleanupLog.CleanupLogSpec();
-                spec.setAttachmentName(attachmentName);
-                spec.setDisplayName(displayName);
-                spec.setSize(size);
-                spec.setReason(com.timxs.storagetoolkit.extension.CleanupLog.Reason.valueOf(reason));
-                spec.setOperator(operator);
-                spec.setDeletedAt(Instant.now());
-                spec.setErrorMessage(errorMessage);
-                log.setSpec(spec);
-
-                return client.create(log).then();
-            });
-    }
-
-    /**
-     * 获取当前登录用户名
-     */
-    private Mono<String> getCurrentUsername() {
-        return ReactiveSecurityContextHolder.getContext()
-            .map(ctx -> ctx.getAuthentication())
-            .filter(auth -> auth != null && auth.isAuthenticated())
-            .map(auth -> auth.getName())
-            .defaultIfEmpty("system");
     }
 
     /**

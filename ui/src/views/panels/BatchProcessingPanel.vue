@@ -34,13 +34,13 @@
     <!-- 警告提示 -->
     <div class="notice warning" v-if="!settings.keepOriginalFile">
       <span class="notice-icon">⚠️</span>
-      <span>当前设置为「不保留原图」，处理后的文件将被可能会被会重命名，导致原有链接失效！原文件将被删除。</span>
+      <span>当前设置为「不保留原图」，处理后的文件将会被重命名，导致原有链接失效！原文件将被删除。</span>
     </div>
 
     <!-- 配置说明 -->
     <div class="notice info">
       <span class="notice-icon">💡</span>
-      <span>批量处理使用「图片处理」Tab 中的配置（过滤规则、格式转换、水印等），请先在插件设置中配置好处理参数。</span>
+      <span>批量处理使用插件设置中「图片处理」分组的配置（过滤规则、格式转换、水印等），请先在插件设置中配置好处理参数。</span>
     </div>
 
     <!-- 扫描进度条 - 仅在处理中显示 -->
@@ -227,14 +227,79 @@
       </div>
     </div>
   </div>
+
+  <!-- 批量处理确认对话框 -->
+  <VModal
+    v-model:visible="showCustomDialog"
+    :width="480"
+    :closable="true"
+    :mask-closable="true"
+    @close="handleDialogCancel"
+  >
+    <template #header>{{ getDialogTitle() }}</template>
+    <template #default>
+      <div class="batch-confirm-content">
+        <!-- 描述内容 -->
+        <div class="confirm-description">
+          确定要处理选中的 <strong>{{ selectedAttachments.length }}</strong> 个附件吗？
+        </div>
+
+        <!-- 测试版提示 -->
+        <div class="confirm-alert confirm-alert-beta">
+          <span class="alert-icon">🧪</span>
+          <span>当前为测试版功能，使用前请备份重要数据</span>
+        </div>
+
+        <!-- 不保留原图警告 -->
+        <div class="confirm-alert confirm-alert-warning" v-if="!settings.keepOriginalFile">
+          <span class="alert-icon">⚠️</span>
+          <span><strong>当前为「不保留原图」模式，原文件将被删除，此操作不可恢复！</strong></span>
+        </div>
+
+        <!-- 选项区域 -->
+        <div class="confirm-option">
+          <label class="confirm-checkbox-label">
+            <input
+              type="checkbox"
+              v-model="replaceReferences"
+              class="confirm-checkbox"
+            />
+            <span class="confirm-checkbox-text">
+              <span class="checkbox-main">自动替换引用</span>
+              <span class="checkbox-sub">测试版功能，有风险请谨慎使用</span>
+            </span>
+          </label>
+          <div class="confirm-option-hint">⚠️ 此功能会修改文章/页面/评论/设置中的链接内容</div>
+        </div>
+
+        <!-- 底部提示 -->
+        <div class="confirm-tip">
+          💡 建议先执行「引用扫描」以确保引用正确替换
+        </div>
+      </div>
+    </template>
+    <template #footer>
+      <div class="confirm-footer">
+        <VButton
+          :type="getConfirmType() === 'danger' ? 'danger' : 'primary'"
+          @click="handleDialogConfirm"
+        >
+          开始处理
+        </VButton>
+        <VButton @click="handleDialogCancel">取消</VButton>
+      </div>
+    </template>
+  </VModal>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
+import { formatBytes } from '@/utils/format'
+import { getFileIcon, isImage } from '@/composables/useReferenceSource'
 
 interface AttachmentItem {
   name: string
@@ -411,37 +476,40 @@ const fetchAttachments = async () => {
 }
 
 // 开始处理
-const startProcessing = async () => {
+const replaceReferences = ref(true)  // 默认勾选替换引用
+const showCustomDialog = ref(false)
+
+const startProcessing = () => {
   if (selectedAttachments.value.length === 0) return
 
-  let confirmMessage = `确定要处理选中的 ${selectedAttachments.value.length} 个附件吗？`
-  if (!settings.value.keepOriginalFile) {
-    confirmMessage += `\n\n⚠️ 当前为「不保留原图」模式，原文件将被删除！`
+  // 显示自定义对话框
+  showCustomDialog.value = true
+}
+
+// 处理自定义对话框确认
+const handleDialogConfirm = async () => {
+  showCustomDialog.value = false
+
+  try {
+    // 清除上次结果
+    clearResults()
+
+    await axiosInstance.post(API_ENDPOINTS.BATCH_PROCESSING_TASKS, {
+      attachmentNames: selectedAttachments.value,
+      replaceReferences: replaceReferences.value
+    })
+    Toast.success('任务已创建')
+    processing.value = true
+    startPolling()
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { message?: string } } }
+    Toast.error(err.response?.data?.message || '创建任务失败')
   }
+}
 
-  Dialog.warning({
-    title: '确认处理',
-    description: confirmMessage,
-    confirmType: settings.value.keepOriginalFile ? 'primary' : 'danger',
-    confirmText: '开始处理',
-    cancelText: '取消',
-    async onConfirm() {
-      try {
-        // 清除上次结果
-        clearResults()
-
-        await axiosInstance.post(API_ENDPOINTS.BATCH_PROCESSING_TASKS, {
-          attachmentNames: selectedAttachments.value
-        })
-        Toast.success('任务已创建')
-        processing.value = true
-        startPolling()
-      } catch (error: unknown) {
-        const err = error as { response?: { data?: { message?: string } } }
-        Toast.error(err.response?.data?.message || '创建任务失败')
-      }
-    }
-  })
+// 处理自定义对话框取消
+const handleDialogCancel = () => {
+  showCustomDialog.value = false
 }
 
 // 取消任务
@@ -575,25 +643,6 @@ const handlePageSizeChange = () => {
   fetchAttachments()
 }
 
-// 工具函数
-const formatBytes = (bytes: number): string => {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0, size = bytes
-  while (size >= 1024 && i < 3) { size /= 1024; i++ }
-  return `${size.toFixed(1)} ${units[i]}`
-}
-
-const getFileIcon = (mediaType: string | null): string => {
-  if (!mediaType) return '📄'
-  if (mediaType.startsWith('image/')) return '🖼️'
-  if (mediaType.startsWith('video/')) return '🎬'
-  if (mediaType.startsWith('audio/')) return '🎵'
-  if (mediaType.includes('pdf')) return '📕'
-  if (mediaType.includes('zip') || mediaType.includes('rar')) return '📦'
-  return '📄'
-}
-
 // 打开预览
 const openPreview = async (att: AttachmentItem) => {
   previewAttachment.value = att
@@ -626,8 +675,11 @@ const openPreview = async (att: AttachmentItem) => {
   }
 }
 
-const isImage = (mediaType: string | null): boolean => {
-  return mediaType?.startsWith('image/') ?? false
+// 对话框配置
+const getDialogTitle = () => '确认批量处理'
+
+const getConfirmType = () => {
+  return settings.value.keepOriginalFile ? 'primary' : 'danger'
 }
 
 onMounted(async () => {
@@ -1211,5 +1263,115 @@ onUnmounted(() => {
 .info-value.info-url {
   font-size: 12px;
   color: #71717a;
+}
+
+/* 批量处理确认对话框 - 参考 Halo 官方样式 */
+.batch-confirm-content {
+  padding: 4px 0;
+}
+
+.confirm-description {
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.confirm-description strong {
+  font-weight: 600;
+}
+
+.confirm-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.confirm-alert-beta {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.confirm-alert-warning {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.alert-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.confirm-option {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.confirm-checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.confirm-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  margin-top: 1px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+}
+
+.confirm-checkbox-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.checkbox-main {
+  font-size: 14px;
+  font-weight: 500;
+  color: #d97706;
+}
+
+.checkbox-sub {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.confirm-option-hint {
+  margin-top: 8px;
+  padding-left: 24px;
+  font-size: 12px;
+  color: #b45309;
+}
+
+.confirm-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.confirm-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  width: 100%;
 }
 </style>

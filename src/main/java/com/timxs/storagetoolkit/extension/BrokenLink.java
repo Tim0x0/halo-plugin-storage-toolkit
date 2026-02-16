@@ -60,6 +60,20 @@ public class BrokenLink extends AbstractExtension {
          * 待删除标识（扫描时标记旧记录）
          */
         private Boolean pendingDelete;
+
+        /**
+         * 原始 URL（文章内容中写的原始 URL，未经过拼接）
+         */
+        private String originalUrl;
+
+        /**
+         * 断链原因
+         * HTTP 错误格式: "HTTP 403", "HTTP 404", "HTTP 500" 等
+         * HTTP_TIMEOUT: 请求超时
+         * CONNECTION_FAILED: 连接失败
+         * ATTACHMENT_NOT_FOUND: HTTP 通过但附件库中不存在记录
+         */
+        private String reason;
     }
 
     /**

@@ -56,6 +56,23 @@ public interface ReferenceService {
                                                        String sourceTitle, String sourceUrl);
 
     /**
+     * 解析引用源标题（带引用类型信息）
+     * 将原始标题解析为 "标题 - 引用类型" 格式：
+     * - ConfigMap 类型: "Earth 主题设置" → "Earth - 侧边栏"（groupKey 为 Setting group key）
+     * - Comment: "Post:uuid" → "文章标题 - 评论"
+     * - Reply: "Comment:uuid" → "文章标题 - 回复"
+     * - Doc: "Doc:uuid" → "文档标题 - 内容"
+     * - 其他类型: "标题" → "标题 - 封面/内容/草稿"（groupKey 为 referenceType）
+     *
+     * @param sourceType 引用源类型
+     * @param sourceTitle 原始标题
+     * @param settingName Setting 的 metadata.name（ConfigMap 类型用于解析 group label）
+     * @param groupKey ConfigMap 类型为 group key，其他类型为 referenceType（cover/content/draft 等）
+     * @return 解析后的标题
+     */
+    Mono<String> resolveSourceTitle(String sourceType, String sourceTitle, String settingName, String groupKey);
+
+    /**
      * 解析文档信息（从 DocTree 获取标题和链接，通过 Doc name 查找）
      *
      * @param docName 文档名称

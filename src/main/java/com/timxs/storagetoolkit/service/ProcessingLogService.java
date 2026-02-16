@@ -3,6 +3,7 @@ package com.timxs.storagetoolkit.service;
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.model.ProcessingLogQuery;
 import com.timxs.storagetoolkit.model.ProcessingResult;
+import com.timxs.storagetoolkit.model.ProcessingSource;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -30,11 +31,11 @@ public interface ProcessingLogService {
      * @param fileSize    文件大小
      * @param startTime   开始时间
      * @param reason      跳过原因
-     * @param source      来源（如 attachment-manager, console-editor, batch-processing）
+     * @param source      来源
      * @return 保存后的日志对象
      */
     Mono<ProcessingLog> saveSkippedLog(String filename, String contentType, long fileSize,
-                                        Instant startTime, String reason, String source);
+                                        Instant startTime, String reason, ProcessingSource source);
 
     /**
      * 保存处理结果日志
@@ -47,7 +48,7 @@ public interface ProcessingLogService {
      * @return 保存后的日志对象
      */
     Mono<ProcessingLog> saveResultLog(ProcessingResult result, String originalFilename,
-                                       long originalSize, Instant startTime, String source);
+                                       long originalSize, Instant startTime, ProcessingSource source);
 
     /**
      * 查询处理日志列表
@@ -87,4 +88,23 @@ public interface ProcessingLogService {
      * @return 日志对象
      */
     Mono<ProcessingLog> getByName(String name);
+
+    /**
+     * 获取处理统计信息
+     *
+     * @return 统计信息
+     */
+    Mono<ProcessingLogStats> getStats();
+
+    /**
+     * 处理日志统计信息
+     */
+    record ProcessingLogStats(
+        long totalProcessed,
+        long successCount,
+        long failedCount,
+        long skippedCount,
+        long partialCount,
+        long totalSavedBytes
+    ) {}
 }

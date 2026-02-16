@@ -1,5 +1,6 @@
 package com.timxs.storagetoolkit.extension;
 
+import com.timxs.storagetoolkit.model.ProcessingSource;
 import com.timxs.storagetoolkit.model.ProcessingStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
@@ -39,45 +40,45 @@ public class ProcessingLog extends AbstractExtension {
          * 原始文件名
          */
         private String originalFilename;
-        
+
         /**
          * 结果文件名
          */
         private String resultFilename;
-        
+
         /**
          * 原始大小（字节）
          */
         private long originalSize;
-        
+
         /**
          * 结果大小（字节）
          */
         private long resultSize;
-        
+
         /**
          * 处理状态
          */
         private ProcessingStatus status;
-        
+
         /**
          * 处理时间
          */
         private Instant processedAt;
-        
+
         /**
          * 处理耗时（毫秒）
          */
         private long processingDuration;
-        
+
         /**
          * 错误信息（如果失败）
          */
         private String errorMessage;
-        
+
         /**
-         * 上传来源：console-editor（控制台编辑器）、uc-editor（UC编辑器）、attachment-manager（附件管理）
+         * 上传来源
          */
-        private String source;
+        private ProcessingSource source;
     }
 }

@@ -17,7 +17,7 @@ import java.util.List;
  */
 @ApiVersion("console.api.storage-toolkit.timxs.com/v1alpha1")
 @RestController
-@RequestMapping("/batch-processing")
+@RequestMapping("/batchprocessing")
 @RequiredArgsConstructor
 public class BatchProcessingEndpoint {
 
@@ -32,7 +32,7 @@ public class BatchProcessingEndpoint {
             return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "附件列表不能为空"));
         }
 
-        return batchProcessingService.createTask(request.attachmentNames())
+        return batchProcessingService.createTask(request.attachmentNames(), request.replaceReferences())
             .map(this::toStatusResponse)
             .onErrorResume(IllegalStateException.class, e ->
                 Mono.error(new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage()))
@@ -69,19 +69,6 @@ public class BatchProcessingEndpoint {
     @GetMapping("/settings")
     public Mono<SettingsResponse> getSettings() {
         return batchProcessingService.getSettings();
-    }
-
-    /**
-     * 检查附件引用（用于警告提示）
-     */
-    @PostMapping("/check-references")
-    public Mono<CheckReferencesResponse> checkReferences(@RequestBody CheckReferencesRequest request) {
-        if (request.attachmentNames() == null || request.attachmentNames().isEmpty()) {
-            return Mono.just(new CheckReferencesResponse(0));
-        }
-
-        return batchProcessingService.countReferencedAttachments(request.attachmentNames())
-            .map(CheckReferencesResponse::new);
     }
 
     /**
@@ -128,11 +115,7 @@ public class BatchProcessingEndpoint {
 
     // ========== 请求/响应对象 ==========
 
-    public record CreateTaskRequest(List<String> attachmentNames) {}
-
-    public record CheckReferencesRequest(List<String> attachmentNames) {}
-
-    public record CheckReferencesResponse(int referencedCount) {}
+    public record CreateTaskRequest(List<String> attachmentNames, boolean replaceReferences) {}
 
     public record StatusResponse(
         String phase,

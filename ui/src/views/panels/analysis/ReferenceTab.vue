@@ -13,14 +13,14 @@
         <button 
           class="btn-delete" 
           @click="deleteSelected" 
-          :disabled="selectedAttachments.length === 0"
+          :disabled="scanning || selectedAttachments.length === 0"
           v-if="filterType === 'unreferenced' && attachmentList.length > 0"
         >
           删除选中 ({{ selectedAttachments.length }})
         </button>
         <span class="scan-info" v-if="stats.lastScanTime">上次扫描：{{ formatTime(stats.lastScanTime) }}</span>
-        <span class="scan-info" v-else-if="stats.phase === 'scanning'">正在扫描...</span>
-        <span class="scan-info error" v-else-if="stats.phase === 'error'">扫描失败：{{ stats.errorMessage }}</span>
+        <span class="scan-info" v-else-if="stats.phase === 'SCANNING'">正在扫描...</span>
+        <span class="scan-info error" v-else-if="stats.phase === 'ERROR'">扫描失败：{{ stats.errorMessage }}</span>
       </div>
       <div class="toolbar-right">
         <div class="filter-wrapper">
@@ -70,7 +70,7 @@
     <!-- 附件列表 -->
     <div class="card">
       <div v-if="loading" class="loading-state">加载中...</div>
-      <div v-else-if="!stats.lastScanTime && stats.phase !== 'scanning'" class="empty-state">
+      <div v-else-if="!stats.lastScanTime && stats.phase !== 'SCANNING'" class="empty-state">
         请先点击「开始扫描」按钮进行扫描
       </div>
       <div v-else-if="attachmentList.length === 0" class="empty-state">
@@ -203,35 +203,10 @@
           </div>
           
           <!-- 引用列表 -->
-          <div class="reference-section" v-if="selectedAttachment?.references?.length">
-            <div class="section-header">
-              <span class="section-title">引用位置</span>
-              <span class="section-count">{{ selectedAttachment.references.length }} 处</span>
-            </div>
-            <div class="reference-list">
-              <a 
-                class="reference-item" 
-                v-for="ref in selectedAttachment?.references" 
-                :key="ref.sourceName + ref.referenceType"
-                :href="ref.sourceUrl || 'javascript:void(0)'"
-                :target="ref.sourceUrl ? '_blank' : undefined"
-                :class="{ 'no-link': !ref.sourceUrl }"
-              >
-                <span class="ref-icon">{{ getSourceTypeIcon(ref.sourceType) }}</span>
-                <div class="ref-content">
-                  <span class="ref-title">{{ getRefDisplayTitle(ref) }}</span>
-                  <div class="ref-tags">
-                    <span class="ref-tag">{{ getReferenceTypeLabel(ref) }}</span>
-                    <span class="ref-tag deleted" v-if="ref.deleted">回收站</span>
-                  </div>
-                </div>
-                <span class="ref-arrow" v-if="ref.sourceUrl">→</span>
-              </a>
-            </div>
-          </div>
-          <div class="empty-references" v-else>
-            <span>暂无引用记录</span>
-          </div>
+          <ReferenceList
+            :references="selectedAttachment?.references"
+            @reference-resolved="handleReferenceResolved"
+          />
         </div>
       </div>
     </div>
@@ -240,22 +215,17 @@
 
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
 import { Dialog, Toast } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
-
-interface ReferenceSource {
-  sourceType: string
-  sourceName: string
-  sourceTitle: string
-  sourceUrl: string | null
-  deleted: boolean
-  referenceType: string | null
-  settingName: string | null
-}
+import { formatBytes, formatTime } from '@/utils/format'
+import type { ReferenceSource } from '@/types/duplicate'
+import { getFileIcon, getSourceTypeLabel, getSourceTypeClass, getUniqueSourceTypes } from '@/composables/useReferenceSource'
+import ReferenceList from '@/components/ReferenceList.vue'
+import type { ReferenceSourceItem } from '@/components/ReferenceList.vue'
 
 interface AttachmentReferenceVo {
   attachmentName: string
@@ -270,7 +240,7 @@ interface AttachmentReferenceVo {
 }
 
 interface StatsResponse {
-  phase: string | null
+  phase: 'SCANNING' | 'COMPLETED' | 'ERROR' | null
   lastScanTime: string | null
   totalAttachments: number
   referencedCount: number
@@ -278,9 +248,6 @@ interface StatsResponse {
   unreferencedSize: number
   errorMessage: string | null
 }
-
-// Setting 类型常量
-const SETTING_TYPES = ['SystemSetting', 'PluginSetting', 'ThemeSetting']
 
 const route = useRoute()
 
@@ -312,9 +279,6 @@ const policyDisplayName = ref<string | null>(null)
 const groupDisplayName = ref<string | null>(null)
 const selectedAttachments = ref<string[]>([])
 
-// Setting group label 缓存
-const settingGroupLabelCache = ref<Record<string, string>>({})
-
 const referenceRate = computed(() => {
   const total = stats.value?.totalAttachments ?? 0
   const referenced = stats.value?.referencedCount ?? 0
@@ -334,6 +298,7 @@ const isIndeterminate = computed(() => {
 })
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let pollTimerRef: ReturnType<typeof setTimeout> | null = null
 
 const handleSearchDebounced = () => {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
@@ -422,7 +387,7 @@ const fetchStats = async () => {
   try {
     const { data } = await axiosInstance.get<StatsResponse>(API_ENDPOINTS.REFERENCES_STATS)
     stats.value = data
-    scanning.value = data.phase === 'scanning'
+    scanning.value = data.phase === 'SCANNING'
   } catch (error) {
     console.error('获取统计数据失败:', error)
   }
@@ -498,12 +463,17 @@ const clearRecords = () => {
 
 const pollScanStatus = () => {
   const poll = async () => {
-    await fetchStats()
-    if (stats.value.phase === 'scanning') {
-      setTimeout(poll, 2000)
-    } else {
+    try {
+      await fetchStats()
+      if (stats.value.phase === 'SCANNING') {
+        pollTimerRef = setTimeout(poll, 2000)
+      } else {
+        scanning.value = false
+        fetchReferences()
+      }
+    } catch (error) {
+      console.error('轮询扫描状态失败:', error)
       scanning.value = false
-      fetchReferences()
     }
   }
   poll()
@@ -538,198 +508,20 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
   } else {
     groupDisplayName.value = '未分组'
   }
-
-  // 异步解析评论/回复的关联标题
-  for (const ref of item.references) {
-    if ((ref.sourceType === 'Comment' || ref.sourceType === 'Reply') && ref.sourceTitle && !ref.sourceUrl) {
-      // sourceTitle 格式: "Kind:name"
-      const colonIndex = ref.sourceTitle.indexOf(':')
-      if (colonIndex > 0) {
-        const kind = ref.sourceTitle.substring(0, colonIndex)
-        const name = ref.sourceTitle.substring(colonIndex + 1)
-        try {
-          const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SUBJECT(kind, name))
-          if (data.title || data.url) {
-            // 更新本地显示
-            ref.sourceTitle = data.title || ref.sourceTitle
-            ref.sourceUrl = data.url
-            // 更新后端缓存
-            await axiosInstance.put(
-              API_ENDPOINTS.REFERENCES_SOURCE(item.attachmentName, ref.sourceName),
-              null,
-              { params: { sourceTitle: data.title, sourceUrl: data.url } }
-            )
-          }
-        } catch (e) {
-          console.debug('解析引用源失败:', e)
-        }
-      }
-    }
-    // 异步解析文档的标题和链接
-    if (ref.sourceType === 'Doc' && ref.sourceTitle && !ref.sourceUrl) {
-      // sourceTitle 格式: "Doc:doc-name"
-      const match = ref.sourceTitle.match(/^Doc:(.+)$/)
-      if (match) {
-        const [, docName] = match
-        try {
-          const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SUBJECT('Doc', docName))
-          if (data.title || data.url) {
-            // 更新本地显示
-            ref.sourceTitle = data.title || ref.sourceTitle
-            ref.sourceUrl = data.url
-            // 更新后端缓存
-            await axiosInstance.put(
-              API_ENDPOINTS.REFERENCES_SOURCE(item.attachmentName, ref.sourceName),
-              null,
-              { params: { sourceTitle: data.title, sourceUrl: data.url } }
-            )
-          }
-        } catch (e) {
-          console.debug('解析文档引用源失败:', e)
-        }
-      }
-    }
-    
-    // 异步获取 Setting 引用的 group label
-    if (SETTING_TYPES.includes(ref.sourceType) && ref.settingName && ref.referenceType) {
-      await fetchSettingGroupLabel(ref.settingName, ref.referenceType)
-    }
-  }
 }
 
-const getFileIcon = (type: string): string => {
-  if (!type) return '📄'
-  if (type.startsWith('image/')) return '🖼️'
-  if (type.startsWith('video/')) return '🎬'
-  if (type.startsWith('audio/')) return '🎵'
-  if (type.includes('pdf')) return '📕'
-  if (type.includes('zip') || type.includes('rar')) return '📦'
-  return '📄'
-}
-
-const getSourceTypeLabel = (type: string): string => {
-  const labels: Record<string, string> = {
-    'Post': '文章',
-    'SinglePage': '页面',
-    'Comment': '评论',
-    'Reply': '回复',
-    'SystemSetting': '系统设置',
-    'PluginSetting': '插件设置',
-    'ThemeSetting': '主题设置',
-    'Moment': '瞬间',
-    'Photo': '图库',
-    'Doc': '文档',
-    'User': '用户'
-  }
-  return labels[type] || type
-}
-
-const getUniqueSourceTypes = (references: ReferenceSource[]): string[] => {
-  return [...new Set(references.map(ref => ref.sourceType))]
-}
-
-const getSourceTypeIcon = (type: string): string => {
-  const icons: Record<string, string> = {
-    'Post': '📝',
-    'SinglePage': '📄',
-    'Comment': '💬',
-    'Reply': '🗨️',
-    'SystemSetting': '⚙️',
-    'PluginSetting': '🔌',
-    'ThemeSetting': '🎨',
-    'Moment': '📸',
-    'Photo': '🖼️',
-    'Doc': '📚',
-    'User': '👤'
-  }
-  return icons[type] || '📦'
-}
-
-const getSourceTypeClass = (type: string): string => {
-  const classes: Record<string, string> = {
-    'Post': 'tag-blue',
-    'SinglePage': 'tag-blue',
-    'Comment': 'tag-pink',
-    'Reply': 'tag-pink',
-    'SystemSetting': 'tag-purple',
-    'PluginSetting': 'tag-purple',
-    'ThemeSetting': 'tag-purple',
-    'Moment': 'tag-orange',
-    'Photo': 'tag-orange',
-    'Doc': 'tag-indigo',
-    'User': 'tag-amber'
-  }
-  return classes[type] || ''
-}
-
-const getReferenceTypeLabel = (ref: ReferenceSource): string => {
-  const labels: Record<string, string> = {
-    'cover': '封面',
-    'content': '内容',
-    'media': '媒体',
-    'comment': '评论',
-    'reply': '回复',
-    'avatar': '头像',
-    'icon': '图标'
-  }
-  
-  // 静态映射优先
-  if (labels[ref.referenceType || '']) {
-    return labels[ref.referenceType || '']
-  }
-  
-  // Setting 类型，检查缓存或返回 referenceType
-  if (SETTING_TYPES.includes(ref.sourceType) && ref.settingName && ref.referenceType) {
-    const cacheKey = `${ref.settingName}:${ref.referenceType}`
-    if (settingGroupLabelCache.value[cacheKey]) {
-      return settingGroupLabelCache.value[cacheKey]
-    }
-    // 异步获取（在 showReferenceDetail 中处理）
-    return ref.referenceType
-  }
-  
-  return ref.referenceType || ''
-}
-
-// 异步获取 Setting group label
-const fetchSettingGroupLabel = async (settingName: string, groupKey: string): Promise<string> => {
-  const cacheKey = `${settingName}:${groupKey}`
-  if (settingGroupLabelCache.value[cacheKey]) {
-    return settingGroupLabelCache.value[cacheKey]
-  }
-
+// 引用解析完成后更新后端缓存
+const handleReferenceResolved = async (resolvedRef: ReferenceSourceItem) => {
+  if (!selectedAttachment.value) return
   try {
-    const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SETTING_GROUP_LABEL(settingName, groupKey))
-    settingGroupLabelCache.value[cacheKey] = data.label
-    return data.label
+    await axiosInstance.put(
+      API_ENDPOINTS.REFERENCES_SOURCE(selectedAttachment.value.attachmentName, resolvedRef.sourceName),
+      null,
+      { params: { sourceTitle: resolvedRef.sourceTitle, sourceUrl: resolvedRef.sourceUrl } }
+    )
   } catch (e) {
-    settingGroupLabelCache.value[cacheKey] = groupKey
-    return groupKey
+    console.debug('更新后端缓存失败:', e)
   }
-}
-
-const getRefDisplayTitle = (ref: ReferenceSource): string => {
-  if (ref.sourceType === 'Comment' || ref.sourceType === 'Reply' || ref.sourceType === 'Doc') {
-    if (ref.sourceUrl) {
-      return ref.sourceTitle
-    }
-    return '加载中...'
-  }
-  return ref.sourceTitle || ref.sourceType
-}
-
-const formatBytes = (bytes: number): string => {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0, size = bytes
-  while (size >= 1024 && i < 3) { size /= 1024; i++ }
-  return `${size.toFixed(1)} ${units[i]}`
-}
-
-const formatTime = (isoString: string): string => {
-  if (!isoString) return ''
-  const date = new Date(isoString)
-  return date.toLocaleString('zh-CN')
 }
 
 // 处理 URL 参数（从 Halo 附件管理跳转）
@@ -747,13 +539,22 @@ const handleUrlParams = () => {
 
 onMounted(async () => {
   await fetchStats()
-  if (stats.value.phase === 'scanning') {
+  if (stats.value.phase === 'SCANNING') {
     scanning.value = true
     pollScanStatus()
   } else if (stats.value.lastScanTime) {
     await fetchReferences()
   }
   handleUrlParams()
+})
+
+onUnmounted(() => {
+  if (pollTimerRef) {
+    clearTimeout(pollTimerRef)
+  }
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
 })
 
 watch(() => route.query.attachment, () => {
@@ -1318,108 +1119,6 @@ watch(() => route.query.attachment, () => {
 .info-value.info-url {
   font-size: 12px;
   color: #71717a;
-}
-
-/* 引用列表区域 */
-.reference-section {
-  padding: 16px;
-}
-
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.section-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: #18181b;
-}
-
-.section-count {
-  font-size: 12px;
-  color: #a1a1aa;
-}
-
-.reference-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.reference-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: #fafafa;
-  border-radius: 6px;
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.reference-item:hover:not(.no-link) {
-  background: #f4f4f5;
-}
-
-.reference-item.no-link {
-  cursor: default;
-}
-
-.ref-icon {
-  font-size: 16px;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.ref-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.ref-title {
-  font-size: 13px;
-  color: #18181b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.4;
-  display: block;
-}
-
-.ref-tags {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
-}
-
-.ref-tag {
-  font-size: 11px;
-  padding: 1px 6px;
-  background: #e4e4e7;
-  color: #52525b;
-  border-radius: 3px;
-}
-
-.ref-tag.deleted {
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-.ref-arrow {
-  font-size: 12px;
-  color: #a1a1aa;
-  flex-shrink: 0;
-}
-
-.empty-references {
-  padding: 32px 16px;
-  text-align: center;
-  color: #a1a1aa;
-  font-size: 13px;
 }
 
 .file-thumbnail {

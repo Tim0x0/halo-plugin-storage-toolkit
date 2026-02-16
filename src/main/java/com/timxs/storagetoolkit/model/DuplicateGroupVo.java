@@ -1,5 +1,6 @@
 package com.timxs.storagetoolkit.model;
 
+import com.timxs.storagetoolkit.extension.AttachmentReference;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -74,6 +75,10 @@ public class DuplicateGroupVo {
         private String policyName;
         private String policyDisplayName;
         private int referenceCount;
-        private boolean isRecommended;
+        private boolean recommended;
+        /**
+         * 引用位置列表
+         */
+        private List<AttachmentReference.ReferenceSource> references;
     }
 }

@@ -6,12 +6,12 @@ metadata:
     halo.run/role-template: "true"
   annotations:
     rbac.authorization.halo.run/module: "存储工具箱"
-    rbac.authorization.halo.run/display-name: "存储工具箱查看"
+    rbac.authorization.halo.run/display-name: "存储工具箱管理"
     rbac.authorization.halo.run/ui-permissions: |
       ["plugin:storage-toolkit:manage"]
 rules:
   - apiGroups: [ "console.api.storage-toolkit.timxs.com" ]
-    resources: [ "overview", "statistics", "processinglogs", "processinglogs/stats", "references", "references/scan", "references/stats", "references/clear", "references/policy", "references/group", "references/subject", "references/settings", "duplicates", "duplicates/scan", "duplicates/stats", "duplicates/clear", "batch-processing", "batch-processing/tasks", "batch-processing/tasks/current", "batch-processing/status", "batch-processing/check-references", "cleanup", "cleanup/duplicates", "cleanup/unreferenced", "cleanup/logs", "cleanup/preview", "broken-links", "broken-links/scan", "broken-links/status", "broken-links/source-types", "broken-links/whitelist", "whitelist", "whitelist/search", "whitelist/batch", "whitelist/check", "whitelist/all" ]
+    resources: [ "statistics", "processinglogs", "processinglogs/stats", "references", "references/scan", "references/stats", "references/clear", "references/policy", "references/group", "references/subject", "references/settings", "duplicates", "duplicates/scan", "duplicates/stats", "duplicates/clear", "batchprocessing", "batchprocessing/tasks", "batchprocessing/tasks/current", "batchprocessing/status", "batchprocessing/settings", "cleanup", "cleanup/duplicates", "cleanup/unreferenced", "cleanuplogs", "cleanuplogs/stats", "urlreplacelogs", "urlreplacelogs/stats", "brokenlinks", "brokenlinks/scan", "brokenlinks/status", "brokenlinks/replace", "whitelist", "whitelist/search", "whitelist/batch", "whitelist/check", "whitelist/all" ]
     verbs: [ "*" ]
-  - nonResourceURLs: [ "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/references/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/duplicates/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/batch-processing/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/cleanup/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/broken-links/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/whitelist/*" ]
+  - nonResourceURLs: [ "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/references/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/duplicates/scan", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/batchprocessing/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/cleanup/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/cleanuplogs/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/brokenlinks/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/whitelist/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/processinglogs/*", "/apis/console.api.storage-toolkit.timxs.com/v1alpha1/urlreplacelogs/*" ]
     verbs: [ "*" ]

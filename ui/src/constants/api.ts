@@ -11,15 +11,25 @@ export const API_ENDPOINTS = {
   WHITELIST: `${API_PREFIX}/whitelist`,
   WHITELIST_SEARCH: `${API_PREFIX}/whitelist/search`,
   WHITELIST_BATCH: `${API_PREFIX}/whitelist/batch`,
-  WHITELIST_CHECK: `${API_PREFIX}/whitelist/check`,
   WHITELIST_CLEAR_ALL: `${API_PREFIX}/whitelist/all`,
 
   // 断链
-  BROKEN_LINKS: `${API_PREFIX}/broken-links`,
-  BROKEN_LINKS_SCAN: `${API_PREFIX}/broken-links/scan`,
-  BROKEN_LINKS_STATUS: `${API_PREFIX}/broken-links/status`,
-  BROKEN_LINKS_SOURCE_TYPES: `${API_PREFIX}/broken-links/source-types`,
-  BROKEN_LINKS_WHITELIST: `${API_PREFIX}/broken-links/whitelist`,
+  BROKEN_LINKS: `${API_PREFIX}/brokenlinks`,
+  BROKEN_LINKS_SCAN: `${API_PREFIX}/brokenlinks/scan`,
+  BROKEN_LINKS_STATUS: `${API_PREFIX}/brokenlinks/status`,
+  BROKEN_LINKS_REPLACE: `${API_PREFIX}/brokenlinks/replace`,
+
+  // 处理日志
+  PROCESSING_LOGS: `${API_PREFIX}/processinglogs`,
+  PROCESSING_LOGS_STATS: `${API_PREFIX}/processinglogs/stats`,
+
+  // URL 替换日志
+  URL_REPLACE_LOGS: `${API_PREFIX}/urlreplacelogs`,
+  URL_REPLACE_LOGS_STATS: `${API_PREFIX}/urlreplacelogs/stats`,
+
+  // 清理日志
+  CLEANUP_LOGS: `${API_PREFIX}/cleanuplogs`,
+  CLEANUP_LOGS_STATS: `${API_PREFIX}/cleanuplogs/stats`,
 
   // 引用统计
   REFERENCES: `${API_PREFIX}/references`,
@@ -39,16 +49,12 @@ export const API_ENDPOINTS = {
   DUPLICATES_CLEAR: `${API_PREFIX}/duplicates/clear`,
 
   // 批量处理
-  BATCH_PROCESSING_TASKS: `${API_PREFIX}/batch-processing/tasks`,
-  BATCH_PROCESSING_STATUS: `${API_PREFIX}/batch-processing/status`,
-  BATCH_PROCESSING_SETTINGS: `${API_PREFIX}/batch-processing/settings`,
-  BATCH_PROCESSING_CANCEL: `${API_PREFIX}/batch-processing/tasks/current`,
+  BATCH_PROCESSING_TASKS: `${API_PREFIX}/batchprocessing/tasks`,
+  BATCH_PROCESSING_STATUS: `${API_PREFIX}/batchprocessing/status`,
+  BATCH_PROCESSING_SETTINGS: `${API_PREFIX}/batchprocessing/settings`,
+  BATCH_PROCESSING_CANCEL: `${API_PREFIX}/batchprocessing/tasks/current`,
 
-  // 清理
-  CLEANUP: `${API_PREFIX}/cleanup`,
+  // 清理操作
   CLEANUP_DUPLICATES: (md5Hash: string) => `${API_PREFIX}/cleanup/duplicates/${md5Hash}`,
   CLEANUP_UNREFERENCED: `${API_PREFIX}/cleanup/unreferenced`,
-  CLEANUP_LOGS: `${API_PREFIX}/cleanup/logs`,
-  CLEANUP_LOGS_STATS: `${API_PREFIX}/cleanup/logs/stats`,
-  CLEANUP_PREVIEW: `${API_PREFIX}/cleanup/preview`,
 } as const

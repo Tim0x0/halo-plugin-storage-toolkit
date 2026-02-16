@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
+import java.io.InputStream;
 
 /**
  * 水印服务实现
@@ -18,6 +19,125 @@ import java.awt.image.BufferedImage;
 @Slf4j
 @Service
 public class WatermarkServiceImpl implements WatermarkService {
+
+    /** 内嵌字体缓存 */
+    private volatile Font embeddedChineseFont;
+
+    /** 内嵌字体加载锁 */
+    private final Object fontLoadLock = new Object();
+
+    /**
+     * 智能加载字体（带多级回退）
+     * 优先级：用户指定字体 > 内嵌中文字体 > 系统默认字体
+     *
+     * @param preferredFontName 用户指定的字体名称（空字符串表示使用默认）
+     * @param style 字体样式（Font.PLAIN, Font.BOLD 等）
+     * @param size 字体大小
+     * @param sampleText 用于测试显示的文本（通常是水印文字）
+     * @return 可用字体
+     */
+    private Font loadSmartFont(String preferredFontName, int style, int size, String sampleText) {
+        // 1. 如果用户指定了字体名称，先尝试使用用户字体
+        if (preferredFontName != null && !preferredFontName.isBlank()) {
+            Font userFont = tryLoadUserFont(preferredFontName, style, size, sampleText);
+            if (userFont != null && canDisplayText(userFont, sampleText)) {
+                log.debug("使用用户指定字体: {}", preferredFontName);
+                return userFont;
+            }
+            log.warn("用户指定字体 '{}' 不可用或不支持中文，尝试使用内嵌字体", preferredFontName);
+        }
+
+        // 2. 尝试使用内嵌中文字体
+        Font embeddedFont = getEmbeddedFont(style, size);
+        if (embeddedFont != null && canDisplayText(embeddedFont, sampleText)) {
+            log.debug("使用内嵌中文字体: 文泉驿微米黑");
+            return embeddedFont;
+        }
+
+        // 3. 回退到系统默认字体
+        log.warn("内嵌字体加载失败，使用系统默认字体（可能无法显示中文）");
+        return new Font(Font.SANS_SERIF, style, size);
+    }
+
+    /**
+     * 尝试加载用户指定的字体
+     */
+    private Font tryLoadUserFont(String fontName, int style, int size, String sampleText) {
+        try {
+            // 直接使用字体名称创建字体
+            Font font = new Font(fontName, style, size);
+            if (canDisplayText(font, sampleText)) {
+                return font;
+            }
+            // 尝试所有已注册的字体
+            Font[] allFonts = GraphicsEnvironment.getLocalGraphicsEnvironment().getAllFonts();
+            for (Font f : allFonts) {
+                if (f.getFontName().equalsIgnoreCase(fontName) || f.getName().equalsIgnoreCase(fontName)) {
+                    Font derivedFont = f.deriveFont(style, (float) size);
+                    if (canDisplayText(derivedFont, sampleText)) {
+                        return derivedFont;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("加载用户字体失败: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * 获取内嵌中文字体（带缓存）
+     */
+    private Font getEmbeddedFont(int style, int size) {
+        if (embeddedChineseFont == null) {
+            synchronized (fontLoadLock) {
+                if (embeddedChineseFont == null) {
+                    embeddedChineseFont = loadEmbeddedFontFromResource();
+                }
+            }
+        }
+        if (embeddedChineseFont != null) {
+            return embeddedChineseFont.deriveFont(style, (float) size);
+        }
+        return null;
+    }
+
+    /**
+     * 从资源文件加载内嵌字体
+     */
+    private Font loadEmbeddedFontFromResource() {
+        try (InputStream is = getClass().getResourceAsStream("/fonts/wqy-microhei.ttf")) {
+            if (is == null) {
+                log.warn("内嵌字体文件未找到: /fonts/wqy-microhei.ttf");
+                return null;
+            }
+            Font baseFont = Font.createFont(Font.TRUETYPE_FONT, is);
+            // 注册到图形环境，使其可用于后续创建
+            GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+            ge.registerFont(baseFont);
+            log.debug("成功加载内嵌中文字体: 文泉驿微米黑");
+            return baseFont;
+        } catch (Exception e) {
+            log.warn("加载内嵌字体失败: {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * 检查字体是否能显示指定文本
+     */
+    private boolean canDisplayText(Font font, String text) {
+        if (text == null || text.isEmpty()) {
+            return true;
+        }
+        // 检查每个字符是否都能显示
+        for (int i = 0; i < text.length(); i++) {
+            if (!font.canDisplay(text.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /**
      * 添加文字水印
@@ -64,7 +184,8 @@ public class WatermarkServiceImpl implements WatermarkService {
             
             // 使用 calculateFontSize 计算字体大小（支持 FIXED 和 ADAPTIVE 模式）
             int fontSize = config.calculateFontSize(image.getWidth(), image.getHeight());
-            Font font = new Font(config.fontName(), Font.BOLD, fontSize);
+            // 智能加载字体：用户指定 > 内嵌 > 系统默认
+            Font font = loadSmartFont(config.fontName(), Font.BOLD, fontSize, config.text());
             g2d.setFont(font);
             FontMetrics metrics = g2d.getFontMetrics();
             int textWidth = metrics.stringWidth(config.text());
@@ -74,7 +195,7 @@ public class WatermarkServiceImpl implements WatermarkService {
             int minFontSize = 12;
             while ((textWidth > maxTextWidth || textHeight > maxTextHeight) && fontSize > minFontSize) {
                 fontSize -= 2;
-                font = new Font(config.fontName(), Font.BOLD, fontSize);
+                font = loadSmartFont(config.fontName(), Font.BOLD, fontSize, config.text());
                 g2d.setFont(font);
                 metrics = g2d.getFontMetrics();
                 textWidth = metrics.stringWidth(config.text());

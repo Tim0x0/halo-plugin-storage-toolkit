@@ -88,8 +88,8 @@ public class DuplicateScanStatus extends AbstractExtension {
      * 扫描阶段常量
      */
     public static class Phase {
-        public static final String SCANNING = "scanning";
-        public static final String COMPLETED = "completed";
-        public static final String ERROR = "error";
+        public static final String SCANNING = "SCANNING";
+        public static final String COMPLETED = "COMPLETED";
+        public static final String ERROR = "ERROR";
     }
 }

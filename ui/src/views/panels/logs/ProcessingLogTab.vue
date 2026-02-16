@@ -37,7 +37,7 @@
         class="filter-input"
         @input="debouncedFetch"
       />
-      <select v-model="filters.status" class="filter-select" @change="fetchLogs">
+      <select v-model="filters.status" class="filter-select" @change="handleFilterChange">
         <option value="">全部状态</option>
         <option value="SUCCESS">成功</option>
         <option value="PARTIAL">部分成功</option>
@@ -105,7 +105,7 @@
                 {{ getCompressionRatio(log.spec) }}
               </span>
             </td>
-            <td class="col-time">{{ formatDate(log.spec?.processedAt) }}</td>
+            <td class="col-time">{{ formatTime(log.spec?.processedAt) }}</td>
           </tr>
         </tbody>
       </table>
@@ -123,9 +123,7 @@
           </button>
         </div>
         <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
-          <option :value="20">20条/页</option>
-          <option :value="50">50条/页</option>
-          <option :value="100">100条/页</option>
+          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}条/页</option>
         </select>
       </div>
     </div>
@@ -133,9 +131,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
 import { Dialog, Toast } from '@halo-dev/components'
+import { API_ENDPOINTS } from '@/constants/api'
+import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
+import { formatBytes, formatTime } from '@/utils/format'
 
 interface ProcessingLogSpec {
   originalFilename: string
@@ -167,7 +168,7 @@ const stats = ref<Stats | null>(null)
 const loading = ref(false)
 const clearing = ref(false)
 const page = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(DEFAULT_PAGE_SIZE)
 const total = ref(0)
 const filters = ref({ filename: '', status: '' })
 
@@ -186,7 +187,7 @@ const debouncedFetch = () => {
 const fetchLogs = async () => {
   loading.value = true
   try {
-    const { data } = await axiosInstance.get('/apis/console.api.storage-toolkit.timxs.com/v1alpha1/processinglogs', {
+    const { data } = await axiosInstance.get(API_ENDPOINTS.PROCESSING_LOGS, {
       params: {
         page: page.value,
         size: pageSize.value,
@@ -207,7 +208,7 @@ const fetchLogs = async () => {
 
 const fetchStats = async () => {
   try {
-    const { data } = await axiosInstance.get('/apis/console.api.storage-toolkit.timxs.com/v1alpha1/processinglogs/stats')
+    const { data } = await axiosInstance.get(API_ENDPOINTS.PROCESSING_LOGS_STATS)
     stats.value = data
   } catch (error) {
     stats.value = { totalProcessed: 0, successCount: 0, failedCount: 0, skippedCount: 0, partialCount: 0, totalSavedBytes: 0 }
@@ -230,6 +231,11 @@ const handlePageSizeChange = () => {
   fetchLogs()
 }
 
+const handleFilterChange = () => {
+  page.value = 1
+  fetchLogs()
+}
+
 const handleClearAll = () => {
   Dialog.warning({
     title: '确认清空',
@@ -240,7 +246,7 @@ const handleClearAll = () => {
     async onConfirm() {
       clearing.value = true
       try {
-        const { data: result } = await axiosInstance.delete('/apis/console.api.storage-toolkit.timxs.com/v1alpha1/processinglogs')
+        const { data: result } = await axiosInstance.delete(API_ENDPOINTS.PROCESSING_LOGS)
         if (result.success) {
           Toast.success(`已清空 ${result.deleted} 条日志`)
           logs.value = []
@@ -255,23 +261,6 @@ const handleClearAll = () => {
       }
     }
   })
-}
-
-const formatBytes = (bytes: number | undefined): string => {
-  if (bytes === undefined || bytes === null || bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  let size = bytes
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024
-    i++
-  }
-  return `${size.toFixed(1)} ${units[i]}`
-}
-
-const formatDate = (dateStr: string | undefined): string => {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString('zh-CN')
 }
 
 const getStatusBadgeClass = (status: string | undefined): string => {
@@ -323,6 +312,10 @@ const getCompressionClass = (spec: ProcessingLogSpec | undefined): string => {
   if (ratio > 0) return 'compression-ok'
   return 'compression-none'
 }
+
+onUnmounted(() => {
+  if (debounceTimer) clearTimeout(debounceTimer)
+})
 
 onMounted(() => handleRefresh())
 </script>

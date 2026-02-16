@@ -14,11 +14,12 @@ public interface BatchProcessingService {
 
     /**
      * 创建批量处理任务
-     * 
+     *
      * @param attachmentNames 待处理的附件名称列表
+     * @param replaceReferences 是否替换引用
      * @return 任务状态
      */
-    Mono<BatchProcessingStatus> createTask(List<String> attachmentNames);
+    Mono<BatchProcessingStatus> createTask(List<String> attachmentNames, boolean replaceReferences);
 
     /**
      * 取消当前任务
@@ -35,16 +36,8 @@ public interface BatchProcessingService {
     Mono<BatchProcessingStatus> getStatus();
 
     /**
-     * 检查附件是否有引用（用于警告提示）
-     * 
-     * @param attachmentNames 附件名称列表
-     * @return 有引用的附件数量
-     */
-    Mono<Integer> countReferencedAttachments(List<String> attachmentNames);
-
-    /**
      * 获取批量处理设置
-     * 
+     *
      * @return 设置响应
      */
     Mono<SettingsResponse> getSettings();

@@ -1,8 +1,8 @@
 package com.timxs.storagetoolkit.filter;
 
 import com.timxs.storagetoolkit.config.ProcessingConfig;
-import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.model.ProcessingResult;
+import com.timxs.storagetoolkit.model.ProcessingSource;
 import com.timxs.storagetoolkit.model.ProcessingStatus;
 import com.timxs.storagetoolkit.service.ImageProcessor;
 import com.timxs.storagetoolkit.service.ProcessingLogService;
@@ -101,10 +101,6 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
         "/apis/api.console.halo.run/v1alpha1/attachments/upload"
     );
 
-    private static final String SOURCE_ATTACHMENT_MANAGER = "attachment-manager";
-    private static final String SOURCE_CONSOLE_EDITOR = "console-editor";
-    private static final String SOURCE_UC_EDITOR = "uc-editor";
-
     /**
      * 获取处理许可的 Semaphore
      * 如果配置的并发数发生变化，会重建 Semaphore
@@ -145,16 +141,16 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                             .switchIfEmpty(chain.filter(exchange).then(Mono.empty()))
                             .flatMap(match -> processAttachmentManagerRequest(exchange, chain).then(Mono.empty()))
                     )
-                    .flatMap(match -> processEditorRequest(exchange, chain, SOURCE_UC_EDITOR).then(Mono.empty()))
+                    .flatMap(match -> processEditorRequest(exchange, chain, ProcessingSource.UC_EDITOR).then(Mono.empty()))
             )
-            .flatMap(match -> processEditorRequest(exchange, chain, SOURCE_CONSOLE_EDITOR).then(Mono.empty()));
+            .flatMap(match -> processEditorRequest(exchange, chain, ProcessingSource.CONSOLE_EDITOR).then(Mono.empty()));
     }
 
     /**
      * 处理编辑器上传请求（Console/UC）
      * 直接调用 AttachmentService.upload() 完成上传，不传递给下游
      */
-    private Mono<Void> processEditorRequest(ServerWebExchange exchange, WebFilterChain chain, String source) {
+    private Mono<Void> processEditorRequest(ServerWebExchange exchange, WebFilterChain chain, ProcessingSource source) {
         return settingsManager.getConfig()
             .flatMap(config -> {
                 if (!config.isEnabled()) {
@@ -167,7 +163,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 }
                 
                 // 获取对应的附件配置
-                Mono<AttachmentUploadConfig> configMono = SOURCE_CONSOLE_EDITOR.equals(source)
+                Mono<AttachmentUploadConfig> configMono = ProcessingSource.CONSOLE_EDITOR == source
                     ? settingsManager.getConsoleAttachmentConfig()
                     : settingsManager.getUcAttachmentConfig();
                 
@@ -187,7 +183,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
      */
     private Mono<Void> doProcessEditorUpload(ServerWebExchange exchange, WebFilterChain chain,
                                               ProcessingConfig config, AttachmentUploadConfig attachConfig,
-                                              String source) {
+                                              ProcessingSource source) {
         if (!isMultipartRequest(exchange.getRequest())) {
             return chain.filter(exchange);
         }
@@ -206,7 +202,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
      */
     private Mono<Void> doProcessEditorUploadWithAuth(ServerWebExchange exchange, WebFilterChain chain,
                                                       ProcessingConfig config, AttachmentUploadConfig attachConfig,
-                                                      String source, org.springframework.security.core.Authentication auth) {
+                                                      ProcessingSource source, org.springframework.security.core.Authentication auth) {
         return exchange.getMultipartData()
             .flatMap(parts -> {
                 FilePart filePart = (FilePart) parts.getFirst("file");
@@ -313,7 +309,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                                         .flatMap(chain::filter);
                                 })
                                 .onErrorResume(e -> {
-                                    log.error("Image processing error, passing to downstream: {}", e.getMessage());
+                                    log.warn("Image processing error, passing to downstream: {}", e.getMessage());
                                     // 异常时传递下游
                                     DataBuffer buffer = bufferFactory.wrap(imageData);
                                     return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
@@ -344,7 +340,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 content,
                 mediaType
             )
-            .doOnNext(a -> log.info("Upload success: {}", a.getMetadata().getName()))
+            .doOnNext(a -> log.debug("Upload success: {}", a.getMetadata().getName()))
             .flatMap(attachment -> attachmentService.getPermalink(attachment)
                 .doOnNext(permalink -> {
                     if (attachment.getStatus() == null) {
@@ -399,15 +395,15 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 if (!config.isEnabled()) {
                     return chain.filter(exchange);
                 }
-                return processRequest(exchange, chain, SOURCE_ATTACHMENT_MANAGER, config);
+                return processRequest(exchange, chain, ProcessingSource.ATTACHMENT_MANAGER, config);
             });
     }
 
     /**
      * 处理附件管理上传请求（装饰 exchange 方式）
      */
-    private Mono<Void> processRequest(ServerWebExchange exchange, WebFilterChain chain, 
-                                       String source, ProcessingConfig config) {
+    private Mono<Void> processRequest(ServerWebExchange exchange, WebFilterChain chain,
+                                       ProcessingSource source, ProcessingConfig config) {
         if (!isMultipartRequest(exchange.getRequest())) {
             return chain.filter(exchange);
         }
@@ -461,7 +457,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
      */
     private Mono<Void> doProcessAttachmentManager(ServerWebExchange exchange, WebFilterChain chain,
                                                    MultiValueMap<String, Part> parts, FilePart filePart,
-                                                   ProcessingConfig config, String source) {
+                                                   ProcessingConfig config, ProcessingSource source) {
         String filename = filePart.filename();
         String contentType = getContentType(filePart);
         Instant startTime = Instant.now();
@@ -527,7 +523,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                             // 只有 SUCCESS 和 PARTIAL 才直接上传
                             if (result.status() == ProcessingStatus.SUCCESS ||
                                 result.status() == ProcessingStatus.PARTIAL) {
-                                log.info("图片处理完成，直接上传，绕过下游 Filter: {} -> {}", filename, result.filename());
+                                log.debug("图片处理完成，直接上传，绕过下游 Filter: {} -> {}", filename, result.filename());
                                 log.debug("Image processed: {} -> {} ({} bytes -> {} bytes, {}% reduction)",
                                     filename, result.filename(),
                                     originalSize, result.data().length,
@@ -743,7 +739,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     }
 
     private void saveProcessingLog(ProcessingResult result, String originalFilename,
-                                    long originalSize, Instant startTime, String source) {
+                                    long originalSize, Instant startTime, ProcessingSource source) {
         processingLogService.saveResultLog(result, originalFilename, originalSize, startTime, source)
             .subscribe(
                 saved -> log.debug("Processing log saved: {}", saved.getMetadata().getName()),
@@ -752,7 +748,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     }
 
     private void saveSkippedLog(String filename, String contentType, long fileSize,
-                                 Instant startTime, String reason, String source) {
+                                 Instant startTime, String reason, ProcessingSource source) {
         processingLogService.saveSkippedLog(filename, contentType, fileSize, startTime, reason, source)
             .subscribe(
                 saved -> log.debug("Skipped log saved: {}", saved.getMetadata().getName()),

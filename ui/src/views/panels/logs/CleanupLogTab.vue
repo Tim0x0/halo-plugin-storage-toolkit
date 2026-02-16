@@ -1,22 +1,22 @@
 <template>
   <div class="cleanup-log-tab">
     <!-- 统计卡片 -->
-    <div class="stats-row" v-if="stats">
-      <div class="stat-box">
-        <span class="stat-num">{{ stats.totalCount }}</span>
-        <span class="stat-text">总删除数</span>
+    <div class="stats-grid" v-if="stats">
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.totalCount }}</div>
+        <div class="stat-label">总删除数</div>
       </div>
-      <div class="stat-box">
-        <span class="stat-num orange">{{ stats.duplicateCount }}</span>
-        <span class="stat-text">重复文件</span>
+      <div class="stat-card">
+        <div class="stat-value stat-source">{{ stats.duplicateCount }}</div>
+        <div class="stat-label">重复文件</div>
       </div>
-      <div class="stat-box">
-        <span class="stat-num orange">{{ stats.unreferencedCount }}</span>
-        <span class="stat-text">未引用文件</span>
+      <div class="stat-card">
+        <div class="stat-value stat-source">{{ stats.unreferencedCount }}</div>
+        <div class="stat-label">未引用文件</div>
       </div>
-      <div class="stat-box">
-        <span class="stat-num green">{{ formatBytes(stats.freedBytes) }}</span>
-        <span class="stat-text">释放空间</span>
+      <div class="stat-card">
+        <div class="stat-value stat-success">{{ formatBytes(stats.freedBytes) }}</div>
+        <div class="stat-label">释放空间</div>
       </div>
     </div>
 
@@ -38,60 +38,75 @@
         <button type="button" class="btn-refresh" @click="handleRefresh" :disabled="loading">
           {{ loading ? '加载中...' : '刷新' }}
         </button>
-        <button type="button" class="btn-clear" @click="clearLogs" :disabled="!stats || stats.totalCount === 0">
-          清空日志
+        <button type="button" class="btn-clear" @click="clearLogs" :disabled="clearing">
+          {{ clearing ? '清空中...' : '清空日志' }}
         </button>
       </div>
     </div>
 
     <!-- 日志列表 -->
-    <div class="card">
+    <div class="logs-container">
       <div v-if="loading" class="loading-state">加载中...</div>
-      <div v-else-if="logs.length === 0" class="empty-state">暂无清理日志</div>
-      <template v-else>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>文件名</th>
-              <th>大小</th>
-              <th>删除原因</th>
-              <th>操作人</th>
-              <th>删除时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="log in logs" :key="log.name">
-              <td>{{ log.displayName }}</td>
-              <td>{{ formatBytes(log.size || 0) }}</td>
-              <td>
-                <span :class="['reason-tag', getReasonClass(log.reason)]">
-                  {{ getReasonLabel(log.reason) }}
-                </span>
-              </td>
-              <td>{{ log.operator || '-' }}</td>
-              <td>{{ formatTime(log.deletedAt) }}</td>
-            </tr>
-          </tbody>
-        </table>
 
-        <!-- 分页 -->
-        <div class="pagination" v-if="total > pageSize">
-          <div class="page-info">共 {{ total }} 条</div>
-          <div class="page-controls">
-            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-            <span class="page-num">{{ page }} / {{ totalPages }}</span>
-            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-          </div>
+      <div v-else-if="logs.length === 0" class="empty-state">
+        <div class="empty-icon">📋</div>
+        <div class="empty-text">暂无清理日志</div>
+      </div>
+
+      <table v-else class="logs-table">
+        <thead>
+          <tr>
+            <th class="col-filename">文件名</th>
+            <th class="col-size">大小</th>
+            <th class="col-reason">删除原因</th>
+            <th class="col-operator">操作人</th>
+            <th class="col-time">删除时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="log in logs" :key="log.name">
+            <td class="col-filename">
+              <div class="filename" :title="log.displayName">{{ log.displayName }}</div>
+            </td>
+            <td class="col-size">{{ formatBytes(log.size || 0) }}</td>
+            <td class="col-reason">
+              <span :class="['reason-badge', getReasonClass(log.reason)]">
+                {{ getReasonLabel(log.reason) }}
+              </span>
+            </td>
+            <td class="col-operator">{{ log.operator || '-' }}</td>
+            <td class="col-time">{{ formatTime(log.deletedAt) }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- 分页 -->
+      <div class="pagination" v-if="total > 0">
+        <div class="page-info">共 {{ total }} 条</div>
+        <div class="page-controls">
+          <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">
+            上一页
+          </button>
+          <span class="page-num">{{ page }} / {{ totalPages }}</span>
+          <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">
+            下一页
+          </button>
         </div>
-      </template>
+        <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
+          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}条/页</option>
+        </select>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
 import { Dialog, Toast } from '@halo-dev/components'
+import { API_ENDPOINTS } from '@/constants/api'
+import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
+import { formatBytes, formatTime } from '@/utils/format'
 
 interface CleanupLog {
   name: string
@@ -111,13 +126,12 @@ interface Stats {
   freedBytes: number
 }
 
-const API_BASE = '/apis/console.api.storage-toolkit.timxs.com/v1alpha1/cleanup'
-
 const logs = ref<CleanupLog[]>([])
 const stats = ref<Stats | null>(null)
 const loading = ref(false)
+const clearing = ref(false)
 const page = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(DEFAULT_PAGE_SIZE)
 const total = ref(0)
 const filterReason = ref('')
 const filterFilename = ref('')
@@ -141,11 +155,13 @@ const fetchLogs = async () => {
     if (filterReason.value) params.reason = filterReason.value
     if (filterFilename.value) params.filename = filterFilename.value
 
-    const { data } = await axiosInstance.get(`${API_BASE}/logs`, { params })
+    const { data } = await axiosInstance.get(API_ENDPOINTS.CLEANUP_LOGS, { params })
     logs.value = data.items || []
     total.value = data.total || 0
   } catch (error) {
     console.error('获取日志失败:', error)
+    logs.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -153,7 +169,7 @@ const fetchLogs = async () => {
 
 const fetchStats = async () => {
   try {
-    const { data } = await axiosInstance.get(`${API_BASE}/logs/stats`)
+    const { data } = await axiosInstance.get(API_ENDPOINTS.CLEANUP_LOGS_STATS)
     stats.value = data
   } catch (error) {
     console.error('获取统计失败:', error)
@@ -172,14 +188,20 @@ const clearLogs = () => {
     confirmText: '清空',
     cancelText: '取消',
     async onConfirm() {
+      clearing.value = true
       try {
-        await axiosInstance.delete(`${API_BASE}/logs`)
-        Toast.success('日志已清空')
-        logs.value = []
-        total.value = 0
-        stats.value = { totalCount: 0, duplicateCount: 0, unreferencedCount: 0, freedBytes: 0 }
+        const { data: result } = await axiosInstance.delete(API_ENDPOINTS.CLEANUP_LOGS)
+        if (result.success) {
+          Toast.success(`已清空 ${result.deleted} 条日志`)
+          logs.value = []
+          total.value = 0
+          page.value = 1
+          stats.value = { totalCount: 0, duplicateCount: 0, unreferencedCount: 0, freedBytes: 0 }
+        }
       } catch (error) {
         Toast.error('清空失败')
+      } finally {
+        clearing.value = false
       }
     }
   })
@@ -191,21 +213,15 @@ const handleFilterChange = () => {
 }
 
 const changePage = (newPage: number) => {
-  page.value = newPage
+  if (newPage >= 1 && newPage <= totalPages.value) {
+    page.value = newPage
+    fetchLogs()
+  }
+}
+
+const handlePageSizeChange = () => {
+  page.value = 1
   fetchLogs()
-}
-
-const formatBytes = (bytes: number): string => {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0, size = bytes
-  while (size >= 1024 && i < 3) { size /= 1024; i++ }
-  return `${size.toFixed(1)} ${units[i]}`
-}
-
-const formatTime = (isoString: string | undefined): string => {
-  if (!isoString) return '-'
-  return new Date(isoString).toLocaleString('zh-CN')
 }
 
 const getReasonClass = (reason: string | undefined): string => {
@@ -220,10 +236,11 @@ const getReasonLabel = (reason: string | undefined): string => {
   return labels[reason || ''] || reason || '-'
 }
 
-onMounted(() => {
-  fetchStats()
-  fetchLogs()
+onUnmounted(() => {
+  if (debounceTimer) clearTimeout(debounceTimer)
 })
+
+onMounted(() => handleRefresh())
 </script>
 
 <style scoped>
@@ -233,13 +250,14 @@ onMounted(() => {
   gap: 16px;
 }
 
-.stats-row {
+/* 统计卡片 */
+.stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 16px;
 }
 
-.stat-box {
+.stat-card {
   background: white;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
@@ -247,20 +265,18 @@ onMounted(() => {
   text-align: center;
 }
 
-.stat-num {
-  display: block;
+.stat-value {
   font-size: 24px;
   font-weight: 600;
-  color: #18181b;
+  margin-bottom: 4px;
 }
 
-.stat-num.green { color: #16a34a; }
-.stat-num.orange { color: #d97706; }
+.stat-success { color: #16a34a; }
+.stat-source { color: #d97706; }
 
-.stat-text {
+.stat-label {
   font-size: 13px;
   color: #71717a;
-  margin-top: 4px;
 }
 
 /* 筛选栏 */
@@ -339,61 +355,107 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.card {
+/* 日志容器 */
+.logs-container {
   background: white;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   overflow: hidden;
 }
 
-.loading-state, .empty-state {
-  padding: 48px;
+.loading-state,
+.empty-state {
+  padding: 60px 20px;
   text-align: center;
   color: #71717a;
 }
 
-.data-table {
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
+
+.empty-text {
+  font-size: 14px;
+}
+
+/* 表格 */
+.logs-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
-.data-table th, .data-table td {
+.logs-table th,
+.logs-table td {
   padding: 12px 16px;
   text-align: left;
-  border-bottom: 1px solid #f4f4f5;
+  font-size: 14px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: top;
 }
 
-.data-table th {
-  font-size: 12px;
+.logs-table th {
+  background: #fafafa;
   font-weight: 500;
-  color: #71717a;
+  font-size: 13px;
+  color: #666;
+}
+
+.logs-table tr:hover {
   background: #fafafa;
 }
 
-.data-table td {
-  font-size: 14px;
-  color: #18181b;
+/* 列宽 */
+.col-filename { width: 35%; min-width: 180px; }
+.col-size { width: 85px; }
+.col-reason { width: 100px; }
+.col-operator { width: 100px; }
+.col-time { width: 150px; color: #999; font-size: 13px; }
+
+/* 文件名 */
+.filename {
+  font-weight: 500;
+  word-break: break-all;
+  line-height: 1.4;
 }
 
-.reason-tag {
+/* 原因标签 */
+.reason-badge {
   display: inline-block;
-  padding: 2px 8px;
-  font-size: 12px;
+  padding: 3px 8px;
   border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.reason-duplicate { background: #fef3c7; color: #92400e; }
-.reason-unreferenced { background: #fee2e2; color: #dc2626; }
+.reason-duplicate {
+  background: #fef3c7;
+  color: #92400e;
+}
 
+.reason-unreferenced {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* 分页 */
 .pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  border-top: 1px solid #f4f4f5;
+  border-top: 1px solid #f0f0f0;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-.page-info { font-size: 13px; color: #71717a; }
+.page-info {
+  font-size: 13px;
+  color: #666;
+}
 
 .page-controls {
   display: flex;
@@ -407,18 +469,38 @@ onMounted(() => {
   font-size: 13px;
   background: white;
   color: #374151;
-  border: 1px solid #e4e4e7;
+  border: 1px solid #e5e7eb;
   border-radius: 4px;
   cursor: pointer;
 }
 
-.page-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.page-btn:hover:not(:disabled) {
+  background: #f9fafb;
+}
 
-.page-num { font-size: 13px; color: #374151; }
+.page-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-num {
+  font-size: 13px;
+  color: #374151;
+  padding: 0 8px;
+}
+
+.page-size {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: white;
+}
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .stats-row {
+  .stats-grid {
     grid-template-columns: repeat(2, 1fr);
   }
   .filter-bar {

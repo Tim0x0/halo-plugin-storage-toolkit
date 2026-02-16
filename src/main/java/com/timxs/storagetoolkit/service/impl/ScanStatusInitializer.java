@@ -9,9 +9,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
-import reactor.util.retry.Retry;
 import run.halo.app.extension.ReactiveExtensionClient;
 
+import com.timxs.storagetoolkit.service.support.RetryUtils;
 import java.time.Duration;
 
 /**
@@ -59,15 +59,14 @@ public class ScanStatusInitializer {
                 status.getStatus().setErrorMessage("扫描被中断（服务重启）");
                 return client.update(status);
             })
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
-                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
+            .retryWhen(RetryUtils.optimisticLockRetry())
             .doOnSuccess(v -> {
                 if (v != null) {
                     log.info("重复检测扫描状态已重置");
                 }
             })
             .onErrorResume(error -> {
-                log.debug("重置重复检测扫描状态: {}", error.getMessage());
+                log.warn("重置重复检测扫描状态失败: {}", error.getMessage());
                 return Mono.empty();
             })
             .then();
@@ -86,15 +85,14 @@ public class ScanStatusInitializer {
                 status.getStatus().setErrorMessage("扫描被中断（服务重启）");
                 return client.update(status);
             })
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
-                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
+            .retryWhen(RetryUtils.optimisticLockRetry())
             .doOnSuccess(v -> {
                 if (v != null) {
                     log.info("引用扫描状态已重置");
                 }
             })
             .onErrorResume(error -> {
-                log.debug("重置引用扫描状态: {}", error.getMessage());
+                log.warn("重置引用扫描状态失败: {}", error.getMessage());
                 return Mono.empty();
             })
             .then();
@@ -113,15 +111,14 @@ public class ScanStatusInitializer {
                 status.getStatus().setErrorMessage("扫描被中断（服务重启）");
                 return client.update(status);
             })
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
-                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
+            .retryWhen(RetryUtils.optimisticLockRetry())
             .doOnSuccess(v -> {
                 if (v != null) {
                     log.info("断链扫描状态已重置");
                 }
             })
             .onErrorResume(error -> {
-                log.debug("重置断链扫描状态: {}", error.getMessage());
+                log.warn("重置断链扫描状态失败: {}", error.getMessage());
                 return Mono.empty();
             })
             .then();
@@ -140,15 +137,14 @@ public class ScanStatusInitializer {
                 status.getStatus().setErrorMessage("处理被中断（服务重启）");
                 return client.update(status);
             })
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
-                .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")))
+            .retryWhen(RetryUtils.optimisticLockRetry())
             .doOnSuccess(v -> {
                 if (v != null) {
                     log.info("批量处理状态已重置");
                 }
             })
             .onErrorResume(error -> {
-                log.debug("重置批量处理状态: {}", error.getMessage());
+                log.warn("重置批量处理状态失败: {}", error.getMessage());
                 return Mono.empty();
             })
             .then();

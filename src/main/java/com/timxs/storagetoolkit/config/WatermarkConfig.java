@@ -31,8 +31,9 @@ public class WatermarkConfig {
     
     /**
      * 字体名称
+     * 空字符串表示使用内嵌中文字体（文泉驿微米黑）
      */
-    private String fontName = "SansSerif";
+    private String fontName = "";
     
     /**
      * 字体大小（像素）

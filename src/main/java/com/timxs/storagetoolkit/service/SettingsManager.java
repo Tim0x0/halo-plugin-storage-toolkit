@@ -113,4 +113,50 @@ public interface SettingsManager {
      * @return 排除设置
      */
     Mono<ExcludeSettings> getExcludeSettings();
+
+    /**
+     * 通用 HTTP 请求 User-Agent
+     */
+    String DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; HaloStorageToolkit/1.0)";
+
+    /**
+     * 断链检测设置
+     */
+    record BrokenLinkSettings(
+        boolean checkExternalLinks,
+        java.util.List<String> attachmentUrlPrefixes,
+        int checkTimeout,
+        int checkConcurrency
+    ) {
+        public static BrokenLinkSettings defaultSettings() {
+            return new BrokenLinkSettings(true, java.util.List.of("/upload/"), 5, 10);
+        }
+    }
+
+    /**
+     * 获取断链检测设置
+     *
+     * @return 断链检测设置
+     */
+    Mono<BrokenLinkSettings> getBrokenLinkSettings();
+
+    /**
+     * 代理设置
+     */
+    record ProxySettings(boolean enabled, String host, int port) {
+        public static ProxySettings disabled() {
+            return new ProxySettings(false, "", 0);
+        }
+
+        public boolean isEffective() {
+            return enabled && host != null && !host.isBlank() && port > 0 && port <= 65535;
+        }
+    }
+
+    /**
+     * 获取代理设置
+     *
+     * @return 代理设置
+     */
+    Mono<ProxySettings> getProxySettings();
 }

@@ -1,6 +1,5 @@
 package com.timxs.storagetoolkit.endpoint;
 
-import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.model.DuplicateGroupVo;
 import com.timxs.storagetoolkit.service.DuplicateService;
 import com.timxs.storagetoolkit.service.SettingsManager;

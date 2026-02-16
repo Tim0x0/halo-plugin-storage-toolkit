@@ -17,8 +17,8 @@ import java.time.Instant;
 @GVK(group = "storage-toolkit.timxs.com",
      version = "v1alpha1",
      kind = "BrokenLinkScanStatus",
-     plural = "brokenlinkstatuses",
-     singular = "brokenlinkstatus")
+     plural = "brokenlinkscanstatuses",
+     singular = "brokenlinkscanstatus")
 public class BrokenLinkScanStatus extends AbstractExtension {
 
     /**
@@ -36,7 +36,7 @@ public class BrokenLinkScanStatus extends AbstractExtension {
         /**
          * 扫描阶段
          */
-        private Phase phase;
+        private String phase;
 
         /**
          * 开始时间
@@ -70,14 +70,11 @@ public class BrokenLinkScanStatus extends AbstractExtension {
     }
 
     /**
-     * 扫描阶段枚举
+     * 扫描阶段常量
      */
-    public enum Phase {
-        /** 扫描中 */
-        SCANNING,
-        /** 已完成 */
-        COMPLETED,
-        /** 错误 */
-        ERROR
+    public static class Phase {
+        public static final String SCANNING = "SCANNING";
+        public static final String COMPLETED = "COMPLETED";
+        public static final String ERROR = "ERROR";
     }
 }

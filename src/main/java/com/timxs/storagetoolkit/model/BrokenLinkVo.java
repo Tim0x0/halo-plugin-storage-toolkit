@@ -8,9 +8,11 @@ import java.util.List;
  */
 public record BrokenLinkVo(
     String url,
+    String originalUrl,
     List<BrokenLinkSource> sources,
     int sourceCount,
-    Instant discoveredAt
+    Instant discoveredAt,
+    String reason
 ) {
     /**
      * 断链来源

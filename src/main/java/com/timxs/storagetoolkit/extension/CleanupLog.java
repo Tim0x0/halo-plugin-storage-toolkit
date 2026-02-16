@@ -1,5 +1,6 @@
 package com.timxs.storagetoolkit.extension;
 
+import com.timxs.storagetoolkit.model.CleanupReason;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import run.halo.app.extension.AbstractExtension;
@@ -45,7 +46,7 @@ public class CleanupLog extends AbstractExtension {
         /**
          * 删除原因
          */
-        private Reason reason;
+        private CleanupReason reason;
 
         /**
          * 操作用户名
@@ -61,15 +62,5 @@ public class CleanupLog extends AbstractExtension {
          * 错误信息（如果删除失败）
          */
         private String errorMessage;
-    }
-
-    /**
-     * 删除原因枚举
-     */
-    public enum Reason {
-        /** 重复文件 */
-        DUPLICATE,
-        /** 未引用文件 */
-        UNREFERENCED
     }
 }

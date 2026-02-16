@@ -1,6 +1,5 @@
 package com.timxs.storagetoolkit.endpoint;
 
-import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
 import com.timxs.storagetoolkit.service.ReferenceService;
 import com.timxs.storagetoolkit.service.ReferenceService.AttachmentReferenceVo;
 import com.timxs.storagetoolkit.service.ReferenceService.ReferenceQuery;
@@ -10,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
+import run.halo.app.core.extension.Plugin;
 import run.halo.app.core.extension.attachment.Group;
 import run.halo.app.core.extension.attachment.Policy;
 import run.halo.app.core.extension.content.Comment;
@@ -168,15 +168,28 @@ public class ReferenceEndpoint {
                         return Mono.just(new SubjectInfo("瞬间", "/moments"));
                     } else if ("DocTree".equals(subKind)) {
                         return referenceService.resolveDocTreeInfo(subName)
-                            .defaultIfEmpty(new SubjectInfo(subName, null));
+                            .defaultIfEmpty(new SubjectInfo(subName, "/console/comments"));
+                    } else if ("Plugin".equals(subKind)) {
+                        return client.fetch(Plugin.class, subName)
+                            .map(plugin -> new SubjectInfo(
+                                plugin.getSpec().getDisplayName(),
+                                "/console/comments"
+                            ))
+                            .defaultIfEmpty(new SubjectInfo(subName, "/console/comments"));
                     }
-                    return Mono.just(new SubjectInfo("评论", null));
+                    return Mono.just(new SubjectInfo(subName, "/console/comments"));
                 })
                 .defaultIfEmpty(new SubjectInfo(name, null));
             case "Doc" -> referenceService.resolveDocInfo(name)
                 .defaultIfEmpty(new SubjectInfo(name, null));
             case "DocTree" -> referenceService.resolveDocTreeInfo(name)
                 .defaultIfEmpty(new SubjectInfo(name, null));
+            case "Plugin" -> client.fetch(Plugin.class, name)
+                .map(plugin -> new SubjectInfo(
+                    plugin.getSpec().getDisplayName(),
+                    "/console/comments"
+                ))
+                .defaultIfEmpty(new SubjectInfo(name, "/console/comments"));
             default -> Mono.just(new SubjectInfo(name, null));
         };
     }

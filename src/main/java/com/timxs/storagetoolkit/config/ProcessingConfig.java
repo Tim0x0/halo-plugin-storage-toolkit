@@ -38,6 +38,12 @@ public class ProcessingConfig {
      * 限制同时处理的图片数量，防止内存溢出
      */
     private int imageProcessingConcurrency = 3;
+
+    /**
+     * 下载超时时间（秒）
+     * 用于批量处理下载附件、加载水印图片等操作
+     */
+    private int downloadTimeoutSeconds = 90;
     
     // ========== 文件过滤 ==========
     
@@ -53,9 +59,9 @@ public class ProcessingConfig {
     
     /**
      * 最大文件大小（字节），0 表示不限制
-     * 默认 10MB，过大的图片处理时会占用大量内存
+     * 默认 20MB，过大的图片处理时会占用大量内存
      */
-    private long maxFileSize = 10 * 1024 * 1024;
+    private long maxFileSize = 20 * 1024 * 1024;
     
     // ========== 水印设置 ==========
     

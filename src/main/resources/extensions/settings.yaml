@@ -4,9 +4,9 @@ metadata:
   name: storage-toolkit-settings
 spec:
   forms:
-    # ==================== 全局设置 ====================
-    - group: global
-      label: 全局设置
+    # ==================== 基础设置 ====================
+    - group: basic
+      label: 基础设置
       formSchema:
         # 图片处理
         - $formkit: group
@@ -68,6 +68,14 @@ spec:
               min: 1
               max: 10
               help: 同时处理的图片数量，值越大处理越快但占用内存越多（1-10）
+
+            - $formkit: number
+              name: downloadTimeoutSeconds
+              label: 下载超时时间（秒）
+              value: 90
+              min: 30
+              max: 300
+              help: 批量处理下载附件、加载水印图片等操作的超时时间（30-300秒）
         
         # 附件分析排除配置
         - $formkit: group
@@ -87,7 +95,7 @@ spec:
                 labelField: spec.displayName
                 valueField: metadata.name
               value: []
-              help: 这些分组的附件不参与引用扫描和统计
+              help: 这些分组的附件不参与引用扫描、重复检测和断链检测
             
             - $formkit: select
               name: excludePolicies
@@ -102,8 +110,13 @@ spec:
                 labelField: spec.displayName
                 valueField: metadata.name
               value: []
-              help: 这些存储策略的附件不参与引用扫描和统计
-            
+              help: 这些存储策略的附件不参与引用扫描、重复检测和断链检测
+
+        # 重复检测
+        - $formkit: group
+          name: duplicateScanning
+          label: 重复检测
+          children:
             - $formkit: number
               name: duplicateScanConcurrency
               label: 重复检测并发数
@@ -111,7 +124,7 @@ spec:
               min: 1
               max: 10
               help: MD5 计算的并发数，值越大扫描越快但占用资源越多（1-10）
-            
+
             - $formkit: number
               name: md5TimeoutSeconds
               label: MD5 计算超时（秒）
@@ -119,6 +132,27 @@ spec:
               min: 30
               max: 300
               help: 重复检测时单个文件 MD5 计算的超时时间，网络较慢时可适当增加
+
+        # 断链检测
+        - $formkit: group
+          name: brokenLink
+          label: 断链检测
+          children:
+            - $formkit: number
+              name: checkTimeout
+              label: HTTP 检测超时（秒）
+              value: 5
+              min: 1
+              max: 30
+              help: 单个链接 HTTP 检测的超时时间（1-30秒）
+
+            - $formkit: number
+              name: checkConcurrency
+              label: 检测并发数
+              value: 10
+              min: 1
+              max: 20
+              help: 同时检测的链接数量，值越大检测越快但占用资源越多（1-20）
         
     # ==================== 图片处理 ====================
     - group: imageProcessing
@@ -145,9 +179,9 @@ spec:
             - $formkit: number
               name: maxFileSize
               label: 最大文件大小（KB）
-              value: 10240
+              value: 20480
               min: 0
-              help: 仅处理小于此大小的文件，0 表示不限制。建议设置合理上限（如 10240KB），过大的图片处理时会占用大量内存
+              help: 仅处理小于此大小的文件，0 表示不限制。建议设置合理上限（如 20MB），过大的图片处理时会占用大量内存
 
         # 格式转换
         - $formkit: group
@@ -263,6 +297,16 @@ spec:
               label: 水印文字
               value: ""
               validation: required
+
+            - $formkit: text
+              if: "$get(watermarkEnabled).value === true && $get(watermarkType).value === 'TEXT'"
+              id: watermarkFontName
+              key: watermarkFontName
+              name: fontName
+              label: 字体名称
+              value: ""
+              placeholder: 留空使用内置中文字体
+              help: 填写服务器已安装的字体名称（如 Alimama DaoLiTi）。留空则使用插件内置的中文字体（文泉驿微米黑）
             
             - $formkit: radio
               if: "$get(watermarkEnabled).value === true && $get(watermarkType).value === 'TEXT'"
@@ -459,6 +503,26 @@ spec:
               value: false
               help: 启用后可扫描远程存储附件的重复文件（会产生下载流量费用）
 
+        # 断链检测
+        - $formkit: group
+          name: brokenLink
+          label: 断链检测
+          children:
+            - $formkit: switch
+              id: checkExternalLinks
+              key: checkExternalLinks
+              name: checkExternalLinks
+              label: 检测外部链接
+              value: true
+              help: 开启：检测所有链接（包括第三方外链）。关闭：仅检测本站链接和匹配附件 URL 前缀的链接。
+
+            - $formkit: textarea
+              name: attachmentUrlPrefixes
+              label: 附件 URL 前缀
+              value: "/upload/"
+              rows: 3
+              help: 匹配此前缀的链接始终参与断链检测（即使关闭"检测外部链接"），且在 HTTP 通过后会额外检查附件库记录是否存在。一行一个前缀。
+
     # ==================== 批量处理 ====================
     - group: batchProcessing
       label: 批量处理
@@ -475,14 +539,6 @@ spec:
           value: false
           help: "开启后保留原文件，处理后的新文件由系统自动命名；默认关闭（不保留原图）是因为批量处理的目的是替换和优化图片，保留原图会产生额外存储占用。请根据需要选择"
 
-        - $formkit: number
-          name: downloadTimeoutSeconds
-          label: 下载超时时间（秒）
-          value: 90
-          min: 30
-          max: 300
-          help: 下载远程存储文件的超时时间（30-300秒），网络较慢或文件较大时可适当增加
-
     # ==================== 日志设置 ====================
     - group: log
       label: 日志设置
@@ -494,3 +550,33 @@ spec:
           min: 1
           max: 30
           help: 超过此天数的日志将被自动清理（1-30 天）
+
+    # ==================== 代理设置 ====================
+    - group: proxy
+      label: 代理设置
+      formSchema:
+        - $formkit: switch
+          id: proxyEnabled
+          key: proxyEnabled
+          name: proxyEnabled
+          label: 启用 HTTP 代理
+          value: false
+          help: 启用后，断链检测将通过代理服务器发送 HTTP 请求。目前仅断链检测使用此代理。
+
+        - $formkit: text
+          if: "$get(proxyEnabled).value"
+          name: proxyHost
+          label: 代理服务器地址
+          value: ""
+          placeholder: "例如: 127.0.0.1"
+          validation: required
+
+        - $formkit: number
+          if: "$get(proxyEnabled).value"
+          name: proxyPort
+          label: 代理端口
+          value: 7890
+          min: 1
+          max: 65535
+          validation: required
+          help: HTTP 代理端口号（1-65535）

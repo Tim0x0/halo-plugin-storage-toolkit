@@ -9,6 +9,7 @@ import com.timxs.storagetoolkit.extension.DuplicateGroup;
 import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
+import com.timxs.storagetoolkit.extension.UrlReplaceLog;
 import com.timxs.storagetoolkit.extension.WhitelistEntry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -66,8 +67,32 @@ public class StorageToolkitPlugin extends BasePlugin {
     public void start() {
         log.info("Storage Toolkit 插件启动中...");
 
-        // 注册 ProcessingLog Extension
-        schemeManager.register(ProcessingLog.class);
+        // 注册 ProcessingLog Extension（带索引）
+        schemeManager.register(ProcessingLog.class, indexSpecs -> {
+            // 时间索引，用于排序和时间范围过滤
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.processedAt")
+                .setIndexFunc(simpleAttribute(ProcessingLog.class,
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getProcessedAt() != null
+                        ? logEntry.getSpec().getProcessedAt().toString() : null)));
+            // 状态索引，用于状态过滤
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.status")
+                .setIndexFunc(simpleAttribute(ProcessingLog.class,
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getStatus() != null
+                        ? logEntry.getSpec().getStatus().name() : null)));
+            // 来源索引，用于来源过滤
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.source")
+                .setIndexFunc(simpleAttribute(ProcessingLog.class,
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getSource() != null
+                        ? logEntry.getSpec().getSource().name() : null)));
+            // 文件名索引，用于文件名搜索
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.originalFilename")
+                .setIndexFunc(simpleAttribute(ProcessingLog.class,
+                    logEntry -> logEntry.getSpec() != null ? logEntry.getSpec().getOriginalFilename() : null)));
+        });
 
         // 注册 AttachmentReference Extension（带索引）
         schemeManager.register(AttachmentReference.class, indexSpecs -> {
@@ -94,12 +119,23 @@ public class StorageToolkitPlugin extends BasePlugin {
             indexSpecs.add(new IndexSpec()
                 .setName("spec.attachmentName")
                 .setIndexFunc(simpleAttribute(CleanupLog.class,
-                    log -> log.getSpec() != null ? log.getSpec().getAttachmentName() : null)));
+                    logEntry -> logEntry.getSpec() != null ? logEntry.getSpec().getAttachmentName() : null)));
             indexSpecs.add(new IndexSpec()
                 .setName("spec.reason")
                 .setIndexFunc(simpleAttribute(CleanupLog.class,
-                    log -> log.getSpec() != null && log.getSpec().getReason() != null 
-                        ? log.getSpec().getReason().name() : null)));
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getReason() != null
+                        ? logEntry.getSpec().getReason().name() : null)));
+            // 时间索引，用于排序
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.deletedAt")
+                .setIndexFunc(simpleAttribute(CleanupLog.class,
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getDeletedAt() != null
+                        ? logEntry.getSpec().getDeletedAt().toString() : null)));
+            // 文件名索引，用于文件名搜索
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.displayName")
+                .setIndexFunc(simpleAttribute(CleanupLog.class,
+                    logEntry -> logEntry.getSpec() != null ? logEntry.getSpec().getDisplayName() : null)));
         });
 
         // 注册 BrokenLinkScanStatus Extension
@@ -119,6 +155,32 @@ public class StorageToolkitPlugin extends BasePlugin {
                 .setName("spec.url")
                 .setIndexFunc(simpleAttribute(WhitelistEntry.class,
                     entry -> entry.getSpec() != null ? entry.getSpec().getUrl() : null)));
+        });
+
+        // 注册 UrlReplaceLog Extension（带索引）
+        schemeManager.register(UrlReplaceLog.class, indexSpecs -> {
+            // 时间索引，用于排序
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.replacedAt")
+                .setIndexFunc(simpleAttribute(UrlReplaceLog.class,
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getReplacedAt() != null
+                        ? logEntry.getSpec().getReplacedAt().toString() : null)));
+            // 来源索引，用于来源过滤
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.source")
+                .setIndexFunc(simpleAttribute(UrlReplaceLog.class,
+                    logEntry -> logEntry.getSpec() != null && logEntry.getSpec().getSource() != null
+                        ? logEntry.getSpec().getSource().name() : null)));
+            // 旧 URL 索引，用于 URL 搜索
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.oldUrl")
+                .setIndexFunc(simpleAttribute(UrlReplaceLog.class,
+                    logEntry -> logEntry.getSpec() != null ? logEntry.getSpec().getOldUrl() : null)));
+            // 内容标题索引，用于标题搜索
+            indexSpecs.add(new IndexSpec()
+                .setName("spec.sourceTitle")
+                .setIndexFunc(simpleAttribute(UrlReplaceLog.class,
+                    logEntry -> logEntry.getSpec() != null ? logEntry.getSpec().getSourceTitle() : null)));
         });
 
         // 手动注册 ImageIO SPI（解决插件类加载器隔离问题）
@@ -149,6 +211,7 @@ public class StorageToolkitPlugin extends BasePlugin {
         schemeManager.unregister(schemeManager.get(BrokenLinkScanStatus.class));
         schemeManager.unregister(schemeManager.get(BrokenLink.class));
         schemeManager.unregister(schemeManager.get(WhitelistEntry.class));
+        schemeManager.unregister(schemeManager.get(UrlReplaceLog.class));
 
         log.info("Storage Toolkit 插件已停止");
     }
@@ -187,7 +250,7 @@ public class StorageToolkitPlugin extends BasePlugin {
             T spi = spiType.cast(spiClass.getDeclaredConstructor().newInstance());
             registry.registerServiceProvider(spi);
             registeredSpis.add(spi);
-            log.info("{} {} 注册成功", formatName, spiType.getSimpleName());
+            log.debug("{} {} 注册成功", formatName, spiType.getSimpleName());
         } catch (Exception e) {
             log.warn("{} {} 注册失败: {}", formatName, spiType.getSimpleName(), e.getMessage());
         }
@@ -207,7 +270,7 @@ public class StorageToolkitPlugin extends BasePlugin {
             for (IIOServiceProvider spi : registeredSpis) {
                 try {
                     registry.deregisterServiceProvider(spi);
-                    log.info("SPI 注销成功: {}", spi.getClass().getName());
+                    log.debug("SPI 注销成功: {}", spi.getClass().getName());
                 } catch (Exception e) {
                     log.warn("SPI 注销失败: {} - {}", spi.getClass().getName(), e.getMessage());
                 }

@@ -16,21 +16,25 @@
     <div class="tab-content">
       <ProcessingLogTab v-if="activeTab === 'processing'" />
       <CleanupLogTab v-else-if="activeTab === 'cleanup'" />
+      <UrlReplaceLogTab v-else-if="activeTab === 'replace'" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import ProcessingLogTab from './logs/ProcessingLogTab.vue'
 import CleanupLogTab from './logs/CleanupLogTab.vue'
+import UrlReplaceLogTab from './logs/UrlReplaceLogTab.vue'
 
 const tabs = [
   { id: 'processing', label: '图片处理' },
-  { id: 'cleanup', label: '清理记录' }
+  { id: 'cleanup', label: '清理记录' },
+  { id: 'replace', label: '替换记录' }
 ]
 
-const activeTab = ref('processing')
+const activeTab = ref(localStorage.getItem('storage-toolkit-logs-sub-tab') || 'processing')
+watch(activeTab, val => localStorage.setItem('storage-toolkit-logs-sub-tab', val))
 </script>
 
 <style scoped>

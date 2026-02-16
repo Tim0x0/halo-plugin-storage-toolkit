@@ -3,11 +3,14 @@ package com.timxs.storagetoolkit.service.impl;
 import com.timxs.storagetoolkit.extension.BrokenLink;
 import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus;
 import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus.BrokenLinkScanStatusStatus;
+import com.timxs.storagetoolkit.model.BrokenLinkReplaceResult;
 import com.timxs.storagetoolkit.model.BrokenLinkVo;
 import com.timxs.storagetoolkit.model.BrokenLinkVo.BrokenLinkSource;
+import com.timxs.storagetoolkit.model.ReplaceSource;
 import com.timxs.storagetoolkit.service.BrokenLinkService;
+import com.timxs.storagetoolkit.service.ReferenceReplacerService;
 import com.timxs.storagetoolkit.service.ReferenceService;
-import com.timxs.storagetoolkit.service.WhitelistService;
+import com.timxs.storagetoolkit.service.support.UrlReplacer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Sort;
@@ -19,6 +22,7 @@ import run.halo.app.extension.ListOptions;
 import run.halo.app.extension.ListResult;
 import run.halo.app.extension.Metadata;
 import run.halo.app.extension.ReactiveExtensionClient;
+import run.halo.app.infra.ExternalLinkProcessor;
 
 import java.time.Instant;
 import java.util.*;
@@ -35,7 +39,9 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
 
     private final ReactiveExtensionClient client;
     private final ReferenceService referenceService;
-    private final WhitelistService whitelistService;
+    private final ReferenceReplacerService referenceReplacerService;
+
+    private final ExternalLinkProcessor externalLinkProcessor;
 
     @Override
     public Mono<BrokenLinkScanStatus> startScan() {
@@ -66,7 +72,10 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
                                 error -> {
                                     log.error("断链扫描失败", error);
                                     // 更新状态为错误
-                                    updateScanError(error.getMessage()).subscribe();
+                                    updateScanError(error.getMessage()).subscribe(
+                                        v -> {},
+                                        err -> log.error("更新断链扫描错误状态失败", err)
+                                    );
                                 }
                             );
                         return Mono.just(updated);
@@ -74,9 +83,6 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
             });
     }
 
-    /**
-     * 更新扫描错误状态（重新获取最新状态避免乐观锁冲突）
-     */
     private Mono<Void> updateScanError(String errorMessage) {
         return getStatus()
             .flatMap(status -> {
@@ -102,18 +108,16 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
             }));
     }
 
-    @Override
-    public Mono<ListResult<BrokenLinkVo>> listBrokenLinks(int page, int size) {
-        return listBrokenLinks(page, size, null, null);
+    private Mono<ListResult<BrokenLinkVo>> listBrokenLinks(int page, int size) {
+        return listBrokenLinks(page, size, null, null, null, null);
+    }
+
+    private Mono<ListResult<BrokenLinkVo>> listBrokenLinks(int page, int size, String sourceType, String keyword) {
+        return listBrokenLinks(page, size, sourceType, keyword, null, null);
     }
 
     @Override
-    public Mono<ListResult<BrokenLinkVo>> listBrokenLinks(int page, int size, String sourceType, String keyword) {
-        return listBrokenLinks(page, size, sourceType, keyword, null);
-    }
-
-    @Override
-    public Mono<ListResult<BrokenLinkVo>> listBrokenLinks(int page, int size, String sourceType, String keyword, String sort) {
+    public Mono<ListResult<BrokenLinkVo>> listBrokenLinks(int page, int size, String sourceType, String keyword, String reason, String sort) {
         return client.listAll(BrokenLink.class, ListOptions.builder().build(), Sort.unsorted())
             .filter(link -> {
                 // 过滤待删除和已删除的记录（与引用记录逻辑一致）
@@ -150,6 +154,25 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
                     }
                 }
 
+                // 按断链原因过滤
+                if (StringUtils.hasText(reason)) {
+                    String linkReason = link.getStatus().getReason();
+                    if (linkReason == null) {
+                        return false;
+                    }
+                    if ("HTTP_ERROR".equals(reason)) {
+                        // 匹配所有 HTTP 状态码错误（如 "HTTP 404"、"HTTP 403"）
+                        if (!linkReason.startsWith("HTTP ")) {
+                            return false;
+                        }
+                    } else {
+                        // 精确匹配：HTTP_TIMEOUT、CONNECTION_FAILED、ATTACHMENT_NOT_FOUND
+                        if (!reason.equals(linkReason)) {
+                            return false;
+                        }
+                    }
+                }
+
                 return true;
             })
             .collectList()
@@ -159,6 +182,8 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
                     .map(link -> {
                         String url = link.getSpec().getUrl();
                         Instant discoveredAt = link.getStatus() != null ? link.getStatus().getDiscoveredAt() : null;
+                        String linkReason = link.getStatus() != null ? link.getStatus().getReason() : null;
+                        String originalUrl = link.getStatus() != null ? link.getStatus().getOriginalUrl() : null;
 
                         // 构建来源列表
                         List<BrokenLinkSource> sources = link.getStatus() != null && link.getStatus().getSources() != null
@@ -178,7 +203,7 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
 
                         int sourceCount = link.getStatus() != null ? link.getStatus().getSourceCount() : 0;
 
-                        return new BrokenLinkVo(url, sources, sourceCount, discoveredAt);
+                        return new BrokenLinkVo(url, originalUrl, sources, sourceCount, discoveredAt, linkReason);
                     })
                     .sorted(createBrokenLinkComparator(sort))
                     .collect(Collectors.toList());
@@ -193,56 +218,6 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
 
                 return new ListResult<>(page, size, total, pageItems);
             });
-    }
-
-    @Override
-    public Mono<List<String>> getSourceTypes() {
-        return client.listAll(BrokenLink.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(link -> {
-                // 过滤待删除和已删除的记录（与引用记录逻辑一致）
-                if (link.getMetadata().getDeletionTimestamp() != null) {
-                    return false;
-                }
-                if (link.getStatus() != null && link.getStatus().getPendingDelete() != null && link.getStatus().getPendingDelete()) {
-                    return false;
-                }
-                return link.getStatus() != null && link.getStatus().getSources() != null;
-            })
-            .flatMap(link -> Flux.fromIterable(link.getStatus().getSources())
-                .map(s -> s.getSourceType())
-                .filter(StringUtils::hasText))
-            .distinct()
-            .collectList();
-    }
-
-    @Override
-    public Mono<Void> addToWhitelist(List<String> urls) {
-        if (urls == null || urls.isEmpty()) {
-            return Mono.empty();
-        }
-
-        log.info("添加 {} 个 URL 到白名单", urls.size());
-
-        // 使用 WhitelistService 批量添加
-        return whitelistService.addBatch(urls)
-            .then(Mono.defer(() -> {
-                // 删除已添加到白名单的断链记录
-                return client.listAll(BrokenLink.class, ListOptions.builder().build(), Sort.unsorted())
-                    .filter(link -> {
-                        // 过滤待删除和已删除的记录（与引用记录逻辑一致）
-                        if (link.getMetadata().getDeletionTimestamp() != null) {
-                            return false;
-                        }
-                        if (link.getStatus() != null && link.getStatus().getPendingDelete() != null && link.getStatus().getPendingDelete()) {
-                            return false;
-                        }
-                        return link.getSpec() != null && urls.contains(link.getSpec().getUrl());
-                    })
-                    .flatMap(client::delete)
-                    .then();
-            }))
-            .doOnSuccess(v -> log.info("成功添加 {} 个 URL 到白名单", urls.size()))
-            .doOnError(e -> log.error("添加白名单失败", e));
     }
 
     @Override
@@ -302,5 +277,151 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
             }
             return finalDesc ? -result : result;
         };
+    }
+
+    @Override
+    public Mono<BrokenLinkReplaceResult> replaceBrokenLink(String oldUrl, String newUrl) {
+        log.info("开始替换断链: {} -> {}", oldUrl, newUrl);
+
+        // 1. 查找 BrokenLink 记录
+        return client.listAll(BrokenLink.class, ListOptions.builder().build(), Sort.unsorted())
+            .filter(link -> {
+                if (link.getMetadata().getDeletionTimestamp() != null) return false;
+                if (link.getStatus() != null && link.getStatus().getPendingDelete() != null
+                    && link.getStatus().getPendingDelete()) return false;
+                return link.getSpec() != null && oldUrl.equals(link.getSpec().getUrl());
+            })
+            .collectList()
+            .flatMap(links -> {
+                if (links.isEmpty()) {
+                    log.warn("未找到断链记录: {}", oldUrl);
+                    return Mono.just(BrokenLinkReplaceResult.builder()
+                        .allSuccess(false)
+                        .build());
+                }
+
+                BrokenLink brokenLink = links.get(0);
+                List<BrokenLink.BrokenLinkSource> sources = brokenLink.getStatus() != null
+                    ? brokenLink.getStatus().getSources()
+                    : List.of();
+
+                if (sources.isEmpty()) {
+                    log.warn("断链记录没有来源，直接删除: {}", oldUrl);
+                    return client.delete(brokenLink)
+                        .thenReturn(BrokenLinkReplaceResult.builder()
+                            .allSuccess(true)
+                            .brokenLinkDeleted(true)
+                            .build());
+                }
+
+                BrokenLinkReplaceResult result = BrokenLinkReplaceResult.builder()
+                    .totalSources(sources.size())
+                    .build();
+
+                // 2. 构建双形式 URL 映射（完整 URL + 相对路径）
+                Map<String, String> urlMapping = UrlReplacer.buildDualFormMapping(
+                    oldUrl, newUrl, externalLinkProcessor);
+                if (urlMapping.size() > 1) {
+                    log.debug("断链替换将同时处理两种形式: {}", urlMapping.keySet());
+                }
+
+                // 3. 按 (sourceType, sourceName) 分组，每个实体只替换一次
+                List<BrokenLink.BrokenLinkSource> successSources = new ArrayList<>();
+
+                // 分组键：sourceType + "|" + sourceName
+                Map<String, List<BrokenLink.BrokenLinkSource>> grouped = sources.stream()
+                    .collect(Collectors.groupingBy(
+                        s -> s.getSourceType() + "|" + s.getSourceName(),
+                        LinkedHashMap::new, Collectors.toList()));
+
+                return Flux.fromIterable(grouped.values())
+                    .concatMap(group -> {
+                        // 用组内第一个 source 执行替换，传入合并后的 referenceTypes
+                        BrokenLink.BrokenLinkSource firstSource = group.get(0);
+                        String joinedRefTypes = group.stream()
+                            .map(BrokenLink.BrokenLinkSource::getReferenceType)
+                            .filter(r -> r != null && !r.isEmpty())
+                            .distinct()
+                            .collect(Collectors.joining(","));
+
+                        return replaceInSource(firstSource, result, urlMapping, joinedRefTypes)
+                            .doOnNext(success -> {
+                                if (success != null) {
+                                    // 替换成功，组内所有 source 都视为成功
+                                    successSources.addAll(group);
+                                    // 额外的 source 也计入成功数（第一个已在 replaceInSource 中计过）
+                                    for (int i = 1; i < group.size(); i++) {
+                                        result.incrementSuccess();
+                                    }
+                                }
+                            });
+                    })
+                    .then(Mono.defer(() -> {
+                        // 4. 处理 BrokenLink 记录
+                        if (result.getFailedCount() == 0) {
+                            // 全部成功：删除 BrokenLink 记录
+                            return client.delete(brokenLink)
+                                .then(Mono.fromCallable(() -> {
+                                    result.setBrokenLinkDeleted(true);
+                                    log.info("断链替换完成，已删除断链记录: {}", oldUrl);
+                                    return result;
+                                }));
+                        } else if (result.getSuccessCount() > 0) {
+                            // 部分成功：更新 sources 列表
+                            List<BrokenLink.BrokenLinkSource> remainingSources = sources.stream()
+                                .filter(s -> successSources.stream().noneMatch(
+                                    ss -> ss.getSourceType().equals(s.getSourceType())
+                                        && ss.getSourceName().equals(s.getSourceName())))
+                                .toList();
+                            if (remainingSources.isEmpty()) {
+                                // 所有来源都已处理：删除断链记录
+                                return client.delete(brokenLink)
+                                    .then(Mono.fromCallable(() -> {
+                                        result.setBrokenLinkDeleted(true);
+                                        log.info("断链替换完成，已删除断链记录: {}", oldUrl);
+                                        return result;
+                                    }));
+                            }
+                            brokenLink.getStatus().setSources(new ArrayList<>(remainingSources));
+                            brokenLink.getStatus().setSourceCount(remainingSources.size());
+                            return client.update(brokenLink)
+                                .then(Mono.fromCallable(() -> {
+                                    log.info("断链部分替换完成，更新来源列表: {} -> {} 个", oldUrl, remainingSources.size());
+                                    return result;
+                                }));
+                        } else {
+                            // 全部失败
+                            log.warn("断链替换全部失败: {}", oldUrl);
+                            return Mono.just(result);
+                        }
+                    }));
+            });
+    }
+
+    /**
+     * 在单个来源中执行替换
+     */
+    private Mono<BrokenLink.BrokenLinkSource> replaceInSource(BrokenLink.BrokenLinkSource source,
+                                                               BrokenLinkReplaceResult result,
+                                                               Map<String, String> urlMapping,
+                                                               String referenceTypes) {
+        String sourceType = source.getSourceType();
+        String sourceName = source.getSourceName();
+        String sourceTitle = source.getSourceTitle();
+        String settingName = source.getSettingName();
+
+        // 使用通用替换方法（传递合并后的 referenceTypes）
+        return referenceReplacerService.replaceInSingleSource(
+                sourceType, sourceName, sourceTitle, settingName, referenceTypes,
+                urlMapping, ReplaceSource.BROKEN_LINK)
+            .flatMap(success -> {
+                if (success) {
+                    result.incrementSuccess();
+                    return Mono.just(source);
+                } else {
+                    result.addFailure(sourceType, sourceName, sourceTitle, "替换失败");
+                    return Mono.empty();
+                }
+            });
     }
 }

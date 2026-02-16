@@ -31,6 +31,17 @@
           <option value="Moment">瞬间</option>
           <option value="Photo">图库</option>
           <option value="Doc">文档</option>
+          <option value="SystemSetting">系统设置</option>
+          <option value="PluginSetting">插件设置</option>
+          <option value="ThemeSetting">主题设置</option>
+          <option value="User">用户</option>
+        </select>
+        <select v-model="filterReason" class="filter-select" @change="handleFilterChange">
+          <option value="">全部类型</option>
+          <option value="HTTP_ERROR">HTTP 错误</option>
+          <option value="HTTP_TIMEOUT">请求超时</option>
+          <option value="CONNECTION_FAILED">连接失败</option>
+          <option value="ATTACHMENT_NOT_FOUND">附件库丢失</option>
         </select>
         <input
           type="text"
@@ -45,7 +56,7 @@
     <!-- 提示 -->
     <div class="notice info">
       <span class="notice-icon">💡</span>
-      <span>扫描内容中引用了不存在附件的链接，与引用统计共用同一扫描结果</span>
+      <span>扫描内容中引用了不存在附件的链接，与引用统计使用相同的扫描配置</span>
     </div>
 
     <!-- 统计 -->
@@ -87,6 +98,7 @@
               </th>
               <th>断链 URL</th>
               <th>来源位置</th>
+              <th>断链原因</th>
               <th>发现时间</th>
               <th class="sortable" @click="toggleSort('sourceCount')">
                 出现次数
@@ -104,7 +116,7 @@
                 />
               </td>
               <td class="cell-url" @click="showDetail(link)">
-                <span class="url-text" :title="link.url">{{ truncateUrl(link.url) }}</span>
+                <span class="url-text" :title="link.originalUrl || link.url">{{ truncateUrl(link.originalUrl || link.url) }}</span>
               </td>
               <td>
                 <div class="source-locations">
@@ -117,6 +129,11 @@
                     {{ getSourceTypeLabel(type) }}
                   </span>
                 </div>
+              </td>
+              <td>
+                <span :class="['reason-tag', getReasonClass(link.reason)]">
+                  {{ getReasonLabel(link.reason) }}
+                </span>
               </td>
               <td>{{ formatTime(link.discoveredAt) }}</td>
               <td>
@@ -161,7 +178,15 @@
           <div class="info-section">
             <div class="info-item">
               <span class="info-label">断链 URL</span>
-              <span class="info-value info-url">{{ selectedLink?.url }}</span>
+              <span class="info-value info-url">{{ selectedLink?.originalUrl || selectedLink?.url }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">断链原因</span>
+              <span class="info-value">
+                <span :class="['reason-tag', getReasonClass(selectedLink?.reason)]">
+                  {{ getReasonLabel(selectedLink?.reason) }}
+                </span>
+              </span>
             </div>
             <div class="info-item">
               <span class="info-label">发现时间</span>
@@ -174,37 +199,36 @@
           </div>
 
           <!-- 来源列表 -->
-          <div class="reference-section" v-if="selectedLink?.sources?.length">
-            <div class="section-header">
-              <span class="section-title">来源位置</span>
-              <span class="section-count">{{ selectedLink.sources.length }} 处</span>
+          <ReferenceList
+            :references="selectedLink?.sources"
+            title="来源位置"
+          />
+
+          <!-- 替换区域 -->
+          <div class="replace-section">
+            <div class="replace-header" @click="showReplaceForm = !showReplaceForm; replaceInputError = false">
+              <span class="replace-toggle">{{ showReplaceForm ? '▼' : '▶' }}</span>
+              <span class="replace-title">替换为新 URL</span>
             </div>
-            <div class="reference-list">
-              <a
-                class="reference-item"
-                v-for="source in selectedLink.sources"
-                :key="source.name"
-                :href="source.sourceUrl || 'javascript:void(0)'"
-                :target="source.sourceUrl ? '_blank' : undefined"
-                :class="{ 'no-link': !source.sourceUrl }"
-              >
-                <span class="ref-icon">{{ getSourceTypeIcon(source.sourceType) }}</span>
-                <div class="ref-content">
-                  <span class="ref-title">{{ getRefDisplayTitle(source) }}</span>
-                  <div class="ref-tags">
-                    <span class="ref-tag">{{ getReferenceTypeLabel(source) }}</span>
-                    <span class="ref-tag deleted" v-if="source.deleted">回收站</span>
-                  </div>
-                </div>
-                <span class="ref-arrow" v-if="source.sourceUrl">→</span>
-              </a>
+            <div class="replace-form" v-if="showReplaceForm">
+              <input
+                type="text"
+                ref="replaceInputRef"
+                v-model="replaceNewUrl"
+                placeholder="输入新 URL"
+                :class="['replace-input', { 'replace-input-error': replaceInputError }]"
+                @input="replaceInputError = false"
+              />
             </div>
           </div>
 
           <!-- 操作区域 -->
           <div class="action-section">
-            <button class="btn-action-ignore" @click="ignoreSingle(selectedLink?.url)">
+            <button class="btn-action-ignore" @click="ignoreSingle(selectedLink)">
               添加到忽略白名单
+            </button>
+            <button class="btn-action-replace" @click="handleReplaceClick" :disabled="replacing">
+              {{ replacing ? '替换中...' : '替换 URL' }}
             </button>
           </div>
         </div>
@@ -214,14 +238,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
 import { Dialog, Toast } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
+import { formatTime } from '@/utils/format'
+import {
+  getSourceTypeLabel,
+  getSourceTypeClass,
+  getUniqueSourceTypes
+} from '@/composables'
+import ReferenceList from '@/components/ReferenceList.vue'
 
 interface BrokenLinkStats {
-  phase: string | null
+  phase: 'SCANNING' | 'COMPLETED' | 'ERROR' | null
   startTime: string | null
   lastScanTime: string | null
   scannedContentCount: number
@@ -243,9 +274,11 @@ interface BrokenLinkSource {
 
 interface BrokenLinkVo {
   url: string
+  originalUrl: string | null
   sources: BrokenLinkSource[]
   sourceCount: number
   discoveredAt: string
+  reason?: string
 }
 
 const stats = ref<BrokenLinkStats>({
@@ -265,6 +298,7 @@ const total = ref(0)
 const scanning = ref(false)
 const loading = ref(false)
 const filterSourceType = ref('')
+const filterReason = ref('')
 const searchKeyword = ref('')
 const showDetailModal = ref(false)
 const selectedLink = ref<BrokenLinkVo | null>(null)
@@ -272,7 +306,15 @@ const selectedUrls = ref<string[]>([])
 const sortField = ref('sourceCount')
 const sortDesc = ref(true)
 
+// 替换相关状态
+const showReplaceForm = ref(false)
+const replaceNewUrl = ref('')
+const replacing = ref(false)
+const replaceInputError = ref(false)
+const replaceInputRef = ref<HTMLInputElement | null>(null)
+
 const searchDebounceTimer = ref<number>()
+const pollTimer = ref<number>()
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
@@ -342,6 +384,7 @@ const fetchBrokenLinks = async () => {
   try {
     const params: Record<string, any> = { page: page.value, size: pageSize.value }
     if (filterSourceType.value) params.sourceType = filterSourceType.value
+    if (filterReason.value) params.reason = filterReason.value
     if (searchKeyword.value) params.keyword = searchKeyword.value
     if (sortField.value) params.sort = `${sortField.value},${sortDesc.value ? 'desc' : 'asc'}`
 
@@ -409,7 +452,12 @@ const ignoreSelected = () => {
     cancelText: '取消',
     async onConfirm() {
       try {
-        await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_WHITELIST, { urls: selectedUrls.value })
+        // 将选中的 url 映射为原始路径（相对路径保持相对，完整 URL 保持完整）
+        const whitelistUrls = selectedUrls.value.map(url => {
+          const link = brokenLinks.value.find(l => l.url === url)
+          return link?.originalUrl || url
+        })
+        await axiosInstance.post(API_ENDPOINTS.WHITELIST_BATCH, { urls: whitelistUrls })
         Toast.success('已添加到忽略白名单')
         // 从列表中移除已忽略的项
         brokenLinks.value = brokenLinks.value.filter(
@@ -425,8 +473,9 @@ const ignoreSelected = () => {
 }
 
 // 单个忽略
-const ignoreSingle = async (url: string | undefined) => {
-  if (!url) return
+const ignoreSingle = async (link: BrokenLinkVo | null) => {
+  if (!link) return
+  const whitelistUrl = link.originalUrl || link.url
 
   Dialog.warning({
     title: '确认忽略',
@@ -435,11 +484,11 @@ const ignoreSingle = async (url: string | undefined) => {
     cancelText: '取消',
     async onConfirm() {
       try {
-        await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_WHITELIST, { urls: [url] })
+        await axiosInstance.post(API_ENDPOINTS.WHITELIST_BATCH, { urls: [whitelistUrl] })
         Toast.success('已添加到忽略白名单')
         showDetailModal.value = false
         // 从列表中移除
-        brokenLinks.value = brokenLinks.value.filter(item => item.url !== url)
+        brokenLinks.value = brokenLinks.value.filter(item => item.url !== link.url)
         total.value = Math.max(0, total.value - 1)
         return true
       } catch (error: any) {
@@ -450,15 +499,81 @@ const ignoreSingle = async (url: string | undefined) => {
   })
 }
 
+// 处理替换按钮点击
+const handleReplaceClick = () => {
+  if (replaceNewUrl.value.trim()) {
+    // URL 已填写，直接执行替换
+    executeReplace()
+  } else {
+    // URL 为空，展开表单并标红
+    showReplaceForm.value = true
+    replaceInputError.value = true
+    // 等待 DOM 更新后聚焦输入框
+    setTimeout(() => {
+      replaceInputRef.value?.focus()
+    }, 50)
+  }
+}
+
+// 执行断链替换
+const executeReplace = async () => {
+  if (!selectedLink.value || !replaceNewUrl.value) return
+
+  const oldUrl = selectedLink.value.url
+  const newUrl = replaceNewUrl.value.trim()
+
+  if (!newUrl) {
+    Toast.warning('请输入新 URL')
+    return
+  }
+
+  replacing.value = true
+  try {
+    const { data } = await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_REPLACE, {
+      oldUrl,
+      newUrl
+    })
+
+    if (data.allSuccess) {
+      Toast.success(`替换成功，共 ${data.successCount} 处`)
+      showDetailModal.value = false
+      showReplaceForm.value = false
+      replaceNewUrl.value = ''
+      // 从列表中移除
+      brokenLinks.value = brokenLinks.value.filter(item => item.url !== oldUrl)
+      total.value = Math.max(0, total.value - 1)
+    } else if (data.successCount > 0) {
+      Toast.warning(`部分替换成功：${data.successCount} 成功，${data.failedCount} 失败`)
+      // 刷新列表
+      await fetchBrokenLinks()
+      showDetailModal.value = false
+      showReplaceForm.value = false
+      replaceNewUrl.value = ''
+    } else {
+      const failMsg = data.failures?.map((f: any) => `${f.sourceTitle || f.sourceName}: ${f.errorMessage}`).join('; ') || '未知错误'
+      Toast.error(`替换失败：${failMsg}`)
+    }
+  } catch (error: any) {
+    Toast.error('替换操作失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    replacing.value = false
+  }
+}
+
 // 轮询扫描状态
 const pollScanStatus = () => {
   const poll = async () => {
-    await fetchStats()
-    if (stats.value.phase === 'SCANNING') {
-      setTimeout(poll, 2000)
-    } else {
+    try {
+      await fetchStats()
+      if (stats.value.phase === 'SCANNING') {
+        pollTimer.value = window.setTimeout(poll, 2000)
+      } else {
+        scanning.value = false
+        fetchBrokenLinks()
+      }
+    } catch (error) {
+      console.error('轮询扫描状态失败:', error)
       scanning.value = false
-      fetchBrokenLinks()
     }
   }
   poll()
@@ -477,189 +592,41 @@ const onPageSizeChange = () => {
   fetchBrokenLinks()
 }
 
-const formatTime = (time: string | null): string => {
-  if (!time) return ''
-  return new Date(time).toLocaleString('zh-CN')
-}
-
 const truncateUrl = (url: string): string => {
   if (!url) return ''
   return url.length > 60 ? url.substring(0, 60) + '...' : url
 }
 
-const showDetail = async (link: BrokenLinkVo) => {
+const showDetail = (link: BrokenLinkVo) => {
   selectedLink.value = link
   showDetailModal.value = true
-
-  if (link?.sources) {
-    for (const source of link.sources) {
-      // 1. 异步获取 Setting 引用的 group label
-      if (SETTING_TYPES.includes(source.sourceType) && source.settingName && source.referenceType) {
-        await fetchSettingGroupLabel(source.settingName, source.referenceType)
-      }
-
-      // 2. 异步解析评论/回复的关联标题
-      if ((source.sourceType === 'Comment' || source.sourceType === 'Reply') && source.sourceTitle && !source.sourceUrl) {
-        // sourceTitle 格式: "Kind:name"
-        const colonIndex = source.sourceTitle.indexOf(':')
-        if (colonIndex > 0) {
-          const kind = source.sourceTitle.substring(0, colonIndex)
-          const name = source.sourceTitle.substring(colonIndex + 1)
-          try {
-            const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SUBJECT(kind, name))
-            if (data.title || data.url) {
-              // 更新本地显示
-              source.sourceTitle = data.title || source.sourceTitle
-              source.sourceUrl = data.url
-            }
-          } catch (e) {
-            console.debug('解析引用源失败:', e)
-          }
-        }
-      }
-
-      // 3. 异步解析文档的标题和链接
-      if (source.sourceType === 'Doc' && source.sourceTitle && !source.sourceUrl) {
-        // sourceTitle 格式: "Doc:doc-name"
-        const match = source.sourceTitle.match(/^Doc:(.+)$/)
-        if (match) {
-          const [, docName] = match
-          try {
-            const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SUBJECT('Doc', docName))
-            if (data.title || data.url) {
-              // 更新本地显示
-              source.sourceTitle = data.title || source.sourceTitle
-              source.sourceUrl = data.url
-            }
-          } catch (e) {
-            console.debug('解析文档引用源失败:', e)
-          }
-        }
-      }
-    }
-  }
+  showReplaceForm.value = false
+  replaceNewUrl.value = ''
+  replaceInputError.value = false
 }
 
-const getRefDisplayTitle = (ref: BrokenLinkSource): string => {
-  if (ref.sourceType === 'Comment' || ref.sourceType === 'Reply' || ref.sourceType === 'Doc') {
-    if (ref.sourceUrl) {
-      return ref.sourceTitle || ref.sourceName
-    }
-    return '加载中...'
+const getReasonLabel = (reason: string | undefined): string => {
+  if (!reason) return '未知原因'
+  // 特殊错误：固定映射
+  const map: Record<string, string> = {
+    'ATTACHMENT_NOT_FOUND': '附件库丢失',
+    'HTTP_TIMEOUT': '请求超时',
+    'CONNECTION_FAILED': '连接失败'
   }
-  return ref.sourceTitle || ref.sourceName
+  // 不在 map 中直接返回（如 "HTTP 403"）
+  return map[reason] ?? reason
 }
 
-const getUniqueSourceTypes = (sources: BrokenLinkSource[]): string[] => {
-  if (!sources) return []
-  return [...new Set(sources.map(s => s.sourceType))]
-}
-
-const getSourceTypeLabel = (type: string): string => {
-  const labels: Record<string, string> = {
-    'Post': '文章',
-    'SinglePage': '页面',
-    'Comment': '评论',
-    'Reply': '回复',
-    'Moment': '瞬间',
-    'Photo': '图库',
-    'Doc': '文档',
-    'SystemSetting': '系统设置',
-    'PluginSetting': '插件设置',
-    'ThemeSetting': '主题设置',
-    'User': '用户'
+const getReasonClass = (reason: string | undefined): string => {
+  if (!reason) return 'tag-gray'
+  // HTTP 状态码（如 "HTTP 403"、"HTTP 404"）统一使用红色
+  if (reason.startsWith('HTTP ')) return 'tag-red'
+  const map: Record<string, string> = {
+    'HTTP_TIMEOUT': 'tag-orange',
+    'CONNECTION_FAILED': 'tag-orange',
+    'ATTACHMENT_NOT_FOUND': 'tag-amber'
   }
-  return labels[type] || type
-}
-
-const getSourceTypeIcon = (type: string): string => {
-  const icons: Record<string, string> = {
-    'Post': '📝',
-    'SinglePage': '📄',
-    'Comment': '💬',
-    'Reply': '🗨️',
-    'Moment': '📸',
-    'Photo': '🖼️',
-    'Doc': '📚',
-    'SystemSetting': '⚙️',
-    'PluginSetting': '🔌',
-    'ThemeSetting': '🎨',
-    'User': '👤'
-  }
-  return icons[type] || '📦'
-}
-
-const getSourceTypeClass = (type: string): string => {
-  const classes: Record<string, string> = {
-    'Post': 'tag-blue',
-    'SinglePage': 'tag-blue',
-    'Comment': 'tag-pink',
-    'Reply': 'tag-pink',
-    'Moment': 'tag-orange',
-    'Photo': 'tag-orange',
-    'Doc': 'tag-indigo',
-    'SystemSetting': 'tag-purple',
-    'PluginSetting': 'tag-purple',
-    'ThemeSetting': 'tag-purple',
-    'User': 'tag-amber'
-  }
-  return classes[type] || ''
-}
-
-// Setting 类型常量
-const SETTING_TYPES = ['SystemSetting', 'PluginSetting', 'ThemeSetting']
-
-// Setting group label 缓存
-const settingGroupLabelCache = ref<Record<string, string>>({})
-
-const getReferenceTypeLabel = (ref: { sourceType: string; settingName?: string | null; referenceType?: string | null }): string => {
-  const referenceType = ref.referenceType
-  if (!referenceType) return ''
-
-  const labels: Record<string, string> = {
-    'cover': '封面',
-    'content': '内容',
-    'media': '媒体',
-    'comment': '评论',
-    'reply': '回复',
-    'avatar': '头像',
-    'icon': '图标',
-    'basic': '基本设置'
-  }
-
-  // 静态映射优先
-  if (labels[referenceType]) {
-    return labels[referenceType]
-  }
-
-  // Setting 类型，检查缓存或返回 referenceType
-  if (SETTING_TYPES.includes(ref.sourceType) && ref.settingName && referenceType) {
-    const cacheKey = `${ref.settingName}:${referenceType}`
-    if (settingGroupLabelCache.value[cacheKey]) {
-      return settingGroupLabelCache.value[cacheKey]
-    }
-    // TODO: 异步获取 Setting group label
-    return referenceType
-  }
-
-  return referenceType
-}
-
-// 异步获取 Setting group label
-const fetchSettingGroupLabel = async (settingName: string, groupKey: string): Promise<string> => {
-  const cacheKey = `${settingName}:${groupKey}`
-  if (settingGroupLabelCache.value[cacheKey]) {
-    return settingGroupLabelCache.value[cacheKey]
-  }
-
-  try {
-    const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SETTING_GROUP_LABEL(settingName, groupKey))
-    settingGroupLabelCache.value[cacheKey] = data.label
-    return data.label
-  } catch (e) {
-    settingGroupLabelCache.value[cacheKey] = groupKey
-    return groupKey
-  }
+  return map[reason] ?? 'tag-gray'
 }
 
 onMounted(async () => {
@@ -669,6 +636,15 @@ onMounted(async () => {
     pollScanStatus()
   } else if (stats.value.lastScanTime) {
     await fetchBrokenLinks()
+  }
+})
+
+onUnmounted(() => {
+  if (pollTimer.value) {
+    clearTimeout(pollTimer.value)
+  }
+  if (searchDebounceTimer.value) {
+    clearTimeout(searchDebounceTimer.value)
   }
 })
 </script>
@@ -937,6 +913,35 @@ onMounted(async () => {
   color: #b45309;
 }
 
+.reason-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: #f4f4f5;
+  border-radius: 4px;
+  color: #3f3f46;
+  white-space: nowrap;
+}
+
+.reason-tag.tag-red {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.reason-tag.tag-orange {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.reason-tag.tag-amber {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.reason-tag.tag-gray {
+  background: #f4f4f5;
+  color: #71717a;
+}
+
 .source-count {
   display: inline-block;
   min-width: 24px;
@@ -1053,6 +1058,7 @@ onMounted(async () => {
   align-items: center;
   padding: 14px 16px;
   border-bottom: 1px solid #f4f4f5;
+  flex-shrink: 0;
 }
 
 .modal-header h3 {
@@ -1083,36 +1089,18 @@ onMounted(async () => {
 
 .modal-body {
   padding: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.modal-body:hover {
-  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-}
-
-.modal-body::-webkit-scrollbar {
-  width: 6px;
-}
-
-.modal-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.modal-body::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 3px;
-}
-
-.modal-body:hover::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 /* 信息区域 */
 .info-section {
   padding: 16px;
   border-bottom: 1px solid #f4f4f5;
+  flex-shrink: 0;
 }
 
 .info-item {
@@ -1152,100 +1140,40 @@ onMounted(async () => {
   font-family: monospace;
 }
 
-/* 来源列表区域 */
-.reference-section {
+/* 来源列表区域 - 布局覆盖 */
+:deep(.reference-section) {
   padding: 16px;
   border-bottom: 1px solid #f4f4f5;
-}
-
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.section-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: #18181b;
-}
-
-.section-count {
-  font-size: 12px;
-  color: #a1a1aa;
-}
-
-.reference-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.reference-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: #fafafa;
-  border-radius: 6px;
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.reference-item:hover:not(.no-link) {
-  background: #f4f4f5;
-}
-
-.reference-item.no-link {
-  cursor: default;
-}
-
-.ref-icon {
-  font-size: 16px;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.ref-content {
   flex: 1;
-  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
 }
 
-.ref-title {
-  font-size: 13px;
-  color: #18181b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.4;
-  display: block;
+:deep(.reference-section:hover) {
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
 
-.ref-tags {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
+:deep(.reference-section::-webkit-scrollbar) {
+  width: 6px;
 }
 
-.ref-tag {
-  font-size: 11px;
-  padding: 1px 6px;
-  background: #e4e4e7;
-  color: #52525b;
+:deep(.reference-section::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+:deep(.reference-section::-webkit-scrollbar-thumb) {
+  background: transparent;
   border-radius: 3px;
 }
 
-.ref-tag.deleted {
-  background: #fee2e2;
-  color: #dc2626;
+:deep(.reference-section:hover::-webkit-scrollbar-thumb) {
+  background: rgba(0, 0, 0, 0.2);
 }
 
-.ref-arrow {
-  font-size: 12px;
-  color: #a1a1aa;
-  flex-shrink: 0;
+:deep(.empty-references) {
+  border-bottom: 1px solid #f4f4f5;
 }
 
 /* 操作区域 */
@@ -1253,6 +1181,8 @@ onMounted(async () => {
   padding: 16px;
   display: flex;
   justify-content: center;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .btn-action-ignore {
@@ -1269,5 +1199,83 @@ onMounted(async () => {
 
 .btn-action-ignore:hover {
   background: #d97706;
+}
+
+.btn-action-replace {
+  display: inline-block;
+  padding: 8px 16px;
+  font-size: 14px;
+  background: #18181b;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-action-replace:hover {
+  background: #3f3f46;
+}
+
+.btn-action-replace:disabled {
+  background: #a1a1aa;
+  cursor: not-allowed;
+}
+
+/* 替换区域 */
+.replace-section {
+  border-top: 1px solid #f4f4f5;
+  flex-shrink: 0;
+}
+
+.replace-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.replace-header:hover {
+  background: #fafafa;
+}
+
+.replace-toggle {
+  font-size: 10px;
+  color: #a1a1aa;
+}
+
+.replace-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #18181b;
+}
+
+.replace-form {
+  padding: 0 16px 16px;
+}
+
+.replace-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  font-size: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  outline: none;
+}
+
+.replace-input:focus {
+  border-color: #4f46e5;
+}
+
+.replace-input-error {
+  border-color: #ef4444;
+  background-color: #fef2f2;
+}
+
+.replace-input-error:focus {
+  border-color: #ef4444;
 }
 </style>

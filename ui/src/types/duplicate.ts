@@ -3,11 +3,31 @@
  */
 
 /**
+ * 引用源信息
+ */
+export interface ReferenceSource {
+  /** 引用源类型 */
+  sourceType: string
+  /** 引用源名称 */
+  sourceName: string
+  /** 引用源标题 */
+  sourceTitle: string | null
+  /** 引用源链接 */
+  sourceUrl: string | null
+  /** 是否已删除 */
+  deleted: boolean | null
+  /** 引用类型 */
+  referenceType: string | null
+  /** Setting 名称 */
+  settingName: string | null
+}
+
+/**
  * 扫描状态
  */
 export interface DuplicateStats {
   /** 扫描阶段 */
-  phase: 'scanning' | 'completed' | 'error' | null
+  phase: 'SCANNING' | 'COMPLETED' | 'ERROR' | null
   /** 上次扫描时间 */
   lastScanTime: string | null
   /** 扫描开始时间 */
@@ -25,7 +45,7 @@ export interface DuplicateStats {
   /** 错误信息 */
   errorMessage: string | null
   /** 是否启用远程存储扫描 */
-  enableRemoteStorage?: boolean
+  enableRemoteStorage: boolean
 }
 
 /**
@@ -53,7 +73,9 @@ export interface DuplicateFile {
   /** 引用次数 */
   referenceCount: number
   /** 是否推荐保留 */
-  isRecommended: boolean
+  recommended: boolean
+  /** 引用位置列表 */
+  references?: ReferenceSource[]
 }
 
 /**
@@ -76,14 +98,4 @@ export interface DuplicateGroup {
   mediaType: string | null
   /** 组内文件列表 */
   files: DuplicateFile[]
-}
-
-/**
- * 分页结果
- */
-export interface ListResult<T> {
-  page: number
-  size: number
-  total: number
-  items: T[]
 }

@@ -41,7 +41,8 @@ public interface DuplicateService {
      * 删除重复文件
      * @param groupMd5 重复组 MD5
      * @param attachmentNames 要删除的附件名称列表
+     * @param replaceReferences 是否自动替换引用（null 表示默认 true）
      * @return 删除结果
      */
-    Mono<CleanupResult> deleteDuplicates(String groupMd5, java.util.List<String> attachmentNames);
+    Mono<CleanupResult> deleteDuplicates(String groupMd5, java.util.List<String> attachmentNames, Boolean replaceReferences);
 }

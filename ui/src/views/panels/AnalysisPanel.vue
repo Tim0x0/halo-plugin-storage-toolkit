@@ -4,23 +4,24 @@
       <button
         v-for="tab in subTabs"
         :key="tab.id"
-        :class="['sub-tab', { active: currentSubTab === tab.id }]"
-        @click="$emit('update:sub-tab', tab.id)"
+        :class="['sub-tab', { active: activeTab === tab.id }]"
+        @click="activeTab = tab.id"
       >
         {{ tab.label }}
       </button>
     </div>
 
     <div class="sub-content">
-      <ReferenceTab v-if="currentSubTab === 'reference'" />
-      <DuplicateTab v-else-if="currentSubTab === 'duplicate'" />
-      <BrokenLinkTab v-else-if="currentSubTab === 'broken-link'" />
-      <WhitelistTab v-else-if="currentSubTab === 'whitelist'" />
+      <ReferenceTab v-if="activeTab === 'reference'" />
+      <DuplicateTab v-else-if="activeTab === 'duplicate'" />
+      <BrokenLinkTab v-else-if="activeTab === 'broken-link'" />
+      <WhitelistTab v-else-if="activeTab === 'whitelist'" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import ReferenceTab from './analysis/ReferenceTab.vue'
 import DuplicateTab from './analysis/DuplicateTab.vue'
 import BrokenLinkTab from './analysis/BrokenLinkTab.vue'
@@ -33,8 +34,8 @@ const subTabs = [
   { id: 'whitelist', label: '白名单管理' }
 ]
 
-defineProps<{ currentSubTab: string }>()
-defineEmits<{ (e: 'update:sub-tab', value: string): void }>()
+const activeTab = ref(localStorage.getItem('storage-toolkit-analysis-sub-tab') || 'reference')
+watch(activeTab, val => localStorage.setItem('storage-toolkit-analysis-sub-tab', val))
 </script>
 
 <style scoped>

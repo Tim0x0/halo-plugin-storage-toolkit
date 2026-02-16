@@ -2,6 +2,7 @@ package com.timxs.storagetoolkit.endpoint;
 
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.model.ProcessingLogQuery;
+import com.timxs.storagetoolkit.model.ProcessingSource;
 import com.timxs.storagetoolkit.model.ProcessingStatus;
 import com.timxs.storagetoolkit.service.ProcessingLogService;
 import lombok.Data;
@@ -10,7 +11,6 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 import run.halo.app.plugin.ApiVersion;
 
-import java.time.Instant;
 import java.util.List;
 
 /**
@@ -30,14 +30,13 @@ public class ProcessingLogEndpoint {
 
     /**
      * 查询处理日志列表
-     * 支持文件名搜索、状态过滤、时间范围过滤和分页
+     * 支持文件名搜索、状态过滤、来源过滤和分页
      *
-     * @param filename  文件名（模糊搜索）
-     * @param status    处理状态
-     * @param startTime 开始时间（ISO 8601 格式）
-     * @param endTime   结束时间（ISO 8601 格式）
-     * @param page      页码（从 1 开始）
-     * @param size      每页大小
+     * @param filename 文件名（模糊搜索）
+     * @param status   处理状态
+     * @param source   来源
+     * @param page     页码（从 1 开始）
+     * @param size     每页大小
      * @return 日志列表结果
      */
     @GetMapping
@@ -45,8 +44,6 @@ public class ProcessingLogEndpoint {
         @RequestParam(required = false) String filename,
         @RequestParam(required = false) String status,
         @RequestParam(required = false) String source,
-        @RequestParam(required = false) String startTime,
-        @RequestParam(required = false) String endTime,
         @RequestParam(defaultValue = "1") int page,
         @RequestParam(defaultValue = "20") int size
     ) {
@@ -59,12 +56,11 @@ public class ProcessingLogEndpoint {
             }
         }
 
-        // 解析时间
-        Instant start = parseInstant(startTime);
-        Instant end = parseInstant(endTime);
+        // 解析来源枚举
+        ProcessingSource sourceEnum = source != null ? ProcessingSource.fromValue(source) : null;
 
         // 构建查询参数
-        ProcessingLogQuery query = new ProcessingLogQuery(filename, statusEnum, source, start, end, page, size);
+        ProcessingLogQuery query = new ProcessingLogQuery(filename, statusEnum, sourceEnum, page, size);
 
         // 并行查询列表和总数
         return Mono.zip(
@@ -88,29 +84,16 @@ public class ProcessingLogEndpoint {
      */
     @GetMapping("/stats")
     public Mono<ProcessingStats> stats() {
-        // 使用流式处理避免一次性加载所有数据到内存
-        return processingLogService.list(new ProcessingLogQuery(null, null, null, null, null, 1, Integer.MAX_VALUE))
-            .reduce(new ProcessingStats(), (stats, log) -> {
-                stats.setTotalProcessed(stats.getTotalProcessed() + 1);
-                
-                if (log.getSpec() != null) {
-                    ProcessingStatus status = log.getSpec().getStatus();
-                    // 按状态分类计数
-                    if (status == ProcessingStatus.SUCCESS) {
-                        stats.setSuccessCount(stats.getSuccessCount() + 1);
-                    } else if (status == ProcessingStatus.FAILED) {
-                        stats.setFailedCount(stats.getFailedCount() + 1);
-                    } else if (status == ProcessingStatus.SKIPPED) {
-                        stats.setSkippedCount(stats.getSkippedCount() + 1);
-                    } else if (status == ProcessingStatus.PARTIAL) {
-                        stats.setPartialCount(stats.getPartialCount() + 1);
-                    }
-                    
-                    // 计算节省的空间（只统计正值）
-                    long saved = Math.max(0, log.getSpec().getOriginalSize() - log.getSpec().getResultSize());
-                    stats.setTotalSavedBytes(stats.getTotalSavedBytes() + saved);
-                }
-                return stats;
+        return processingLogService.getStats()
+            .map(stats -> {
+                ProcessingStats result = new ProcessingStats();
+                result.setTotalProcessed(stats.totalProcessed());
+                result.setSuccessCount(stats.successCount());
+                result.setFailedCount(stats.failedCount());
+                result.setSkippedCount(stats.skippedCount());
+                result.setPartialCount(stats.partialCount());
+                result.setTotalSavedBytes(stats.totalSavedBytes());
+                return result;
             });
     }
 
@@ -135,23 +118,6 @@ public class ProcessingLogEndpoint {
                 result.setMessage(e.getMessage());
                 return Mono.just(result);
             });
-    }
-
-    /**
-     * 解析 ISO 8601 格式的时间字符串
-     *
-     * @param value 时间字符串
-     * @return Instant 对象，解析失败返回 null
-     */
-    private Instant parseInstant(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            return Instant.parse(value);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     /**

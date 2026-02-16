@@ -3,20 +3,25 @@ package com.timxs.storagetoolkit.service.impl;
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.model.ProcessingLogQuery;
 import com.timxs.storagetoolkit.model.ProcessingResult;
+import com.timxs.storagetoolkit.model.ProcessingSource;
 import com.timxs.storagetoolkit.model.ProcessingStatus;
 import com.timxs.storagetoolkit.service.ProcessingLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import run.halo.app.extension.ListOptions;
 import run.halo.app.extension.Metadata;
+import run.halo.app.extension.PageRequestImpl;
 import run.halo.app.extension.ReactiveExtensionClient;
 
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+
+import static run.halo.app.extension.index.query.Queries.contains;
+import static run.halo.app.extension.index.query.Queries.equal;
 
 /**
  * 处理日志服务实现
@@ -65,7 +70,7 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
      */
     @Override
     public Mono<ProcessingLog> saveSkippedLog(String filename, String contentType, long fileSize,
-                                               Instant startTime, String reason, String source) {
+                                               Instant startTime, String reason, ProcessingSource source) {
         ProcessingLog logEntry = new ProcessingLog();
         ProcessingLog.ProcessingLogSpec spec = new ProcessingLog.ProcessingLogSpec();
 
@@ -98,7 +103,7 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
      */
     @Override
     public Mono<ProcessingLog> saveResultLog(ProcessingResult result, String originalFilename,
-                                              long originalSize, Instant startTime, String source) {
+                                              long originalSize, Instant startTime, ProcessingSource source) {
         ProcessingLog logEntry = new ProcessingLog();
         ProcessingLog.ProcessingLogSpec spec = new ProcessingLog.ProcessingLogSpec();
 
@@ -124,35 +129,19 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
 
     /**
      * 查询处理日志列表
-     * 支持分页、文件名搜索、状态过滤、时间范围过滤
+     * 使用 listBy 进行数据库级别分页查询
      *
      * @param query 查询参数
      * @return 日志列表流
      */
     @Override
     public Flux<ProcessingLog> list(ProcessingLogQuery query) {
-        // 获取所有日志并过滤
-        Flux<ProcessingLog> filtered = client.listAll(ProcessingLog.class, new ListOptions(), null)
-            .filter(log -> matchesQuery(log, query))
-            .sort((a, b) -> {
-                // 按处理时间倒序排列（最新的在前）
-                Instant timeA = a.getSpec() != null ? a.getSpec().getProcessedAt() : null;
-                Instant timeB = b.getSpec() != null ? b.getSpec().getProcessedAt() : null;
-                if (timeA == null && timeB == null) return 0;
-                if (timeA == null) return 1;
-                if (timeB == null) return -1;
-                return timeB.compareTo(timeA);
-            });
-        
-        // 如果 size 是 Integer.MAX_VALUE，表示需要全部数据（用于统计）
-        if (query.size() == Integer.MAX_VALUE) {
-            return filtered;
-        }
-        
-        // 应用分页
-        return filtered
-            .skip((long) (query.page() - 1) * query.size())
-            .take(query.size());
+        var listOptions = buildListOptions(query);
+        var sort = Sort.by(Sort.Order.desc("spec.processedAt"));
+
+        var pageRequest = PageRequestImpl.of(query.page(), query.size(), sort);
+        return client.listBy(ProcessingLog.class, listOptions, pageRequest)
+            .flatMapMany(result -> Flux.fromIterable(result.getItems()));
     }
 
     /**
@@ -163,9 +152,12 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
      */
     @Override
     public Mono<Long> count(ProcessingLogQuery query) {
-        return client.listAll(ProcessingLog.class, new ListOptions(), null)
-            .filter(log -> matchesQuery(log, query))
-            .count();
+        var listOptions = buildListOptions(query);
+        var sort = Sort.unsorted();
+
+        var pageRequest = PageRequestImpl.ofSize(1).withSort(sort);
+        return client.listBy(ProcessingLog.class, listOptions, pageRequest)
+            .map(listResult -> listResult.getTotal());
     }
 
     /**
@@ -184,8 +176,8 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
             .toLocalDate()
             .atStartOfDay(java.time.ZoneId.systemDefault())
             .toInstant();
-        
-        return client.listAll(ProcessingLog.class, new ListOptions(), null)
+
+        return client.listAll(ProcessingLog.class, ListOptions.builder().build(), Sort.unsorted())
             .filter(log -> {
                 // 跳过已标记删除的
                 if (log.getMetadata() != null && log.getMetadata().getDeletionTimestamp() != null) {
@@ -209,7 +201,7 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
      */
     @Override
     public Mono<Long> deleteAll() {
-        return client.listAll(ProcessingLog.class, new ListOptions(), null)
+        return client.listAll(ProcessingLog.class, ListOptions.builder().build(), Sort.unsorted())
             // 过滤掉已标记删除的
             .filter(log -> log.getMetadata() == null || log.getMetadata().getDeletionTimestamp() == null)
             .collectList()
@@ -238,56 +230,65 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
     }
 
     /**
-     * 检查日志是否匹配查询条件
+     * 获取处理统计信息
+     * 使用 listAll + reduce 流式处理，避免一次性加载全部数据到内存
      *
-     * @param log   日志对象
-     * @param query 查询参数
-     * @return 是否匹配
+     * @return 统计信息
      */
-    private boolean matchesQuery(ProcessingLog log, ProcessingLogQuery query) {
-        if (log.getSpec() == null) {
-            return false;
-        }
-        
-        // 过滤掉已标记删除的记录
-        if (log.getMetadata() != null && log.getMetadata().getDeletionTimestamp() != null) {
-            return false;
-        }
-        
-        var spec = log.getSpec();
-        
-        // 文件名模糊匹配（不区分大小写）
-        if (query.filename() != null && !query.filename().isBlank()) {
-            String filename = spec.getOriginalFilename();
-            if (filename == null || !filename.toLowerCase().contains(query.filename().toLowerCase())) {
-                return false;
-            }
-        }
-        
+    @Override
+    public Mono<ProcessingLogStats> getStats() {
+        return client.listAll(ProcessingLog.class, ListOptions.builder().build(), Sort.unsorted())
+            .filter(logEntry -> logEntry.getMetadata() == null
+                || logEntry.getMetadata().getDeletionTimestamp() == null)
+            .reduce(new long[]{0, 0, 0, 0, 0, 0}, (counts, logEntry) -> {
+                counts[0]++; // totalProcessed
+                if (logEntry.getSpec() != null) {
+                    ProcessingStatus status = logEntry.getSpec().getStatus();
+                    if (status == ProcessingStatus.SUCCESS) {
+                        counts[1]++; // successCount
+                    } else if (status == ProcessingStatus.FAILED) {
+                        counts[2]++; // failedCount
+                    } else if (status == ProcessingStatus.SKIPPED) {
+                        counts[3]++; // skippedCount
+                    } else if (status == ProcessingStatus.PARTIAL) {
+                        counts[4]++; // partialCount
+                    }
+                    // 计算节省的空间（只统计正值）
+                    long saved = Math.max(0, logEntry.getSpec().getOriginalSize() - logEntry.getSpec().getResultSize());
+                    counts[5] += saved; // totalSavedBytes
+                }
+                return counts;
+            })
+            .map(counts -> new ProcessingLogStats(
+                counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]
+            ));
+    }
+
+    /**
+     * 构建查询选项
+     * 使用 Queries + ListOptions.builder().andQuery() 链式方法动态组合条件
+     *
+     * @param query 查询参数
+     * @return ListOptions
+     */
+    private ListOptions buildListOptions(ProcessingLogQuery query) {
+        var builder = ListOptions.builder();
+
         // 状态精确匹配
-        if (query.status() != null && spec.getStatus() != query.status()) {
-            return false;
+        if (query.status() != null) {
+            builder.andQuery(equal("spec.status", query.status().name()));
         }
-        
+
         // 来源精确匹配
-        if (query.source() != null && !query.source().isBlank()) {
-            String source = spec.getSource();
-            if (source == null || !source.equals(query.source())) {
-                return false;
-            }
+        if (query.source() != null) {
+            builder.andQuery(equal("spec.source", query.source().name()));
         }
-        
-        // 时间范围过滤
-        Instant processedAt = spec.getProcessedAt();
-        if (processedAt != null) {
-            if (query.startTime() != null && processedAt.isBefore(query.startTime())) {
-                return false;
-            }
-            if (query.endTime() != null && processedAt.isAfter(query.endTime())) {
-                return false;
-            }
+
+        // 文件名模糊搜索
+        if (query.filename() != null && !query.filename().isBlank()) {
+            builder.andQuery(contains("spec.originalFilename", query.filename()));
         }
-        
-        return true;
+
+        return builder.build();
     }
 }

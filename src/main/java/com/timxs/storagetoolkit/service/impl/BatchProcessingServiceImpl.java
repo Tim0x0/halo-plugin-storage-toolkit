@@ -2,7 +2,6 @@ package com.timxs.storagetoolkit.service.impl;
 
 import com.timxs.storagetoolkit.config.ProcessingConfig;
 import com.timxs.storagetoolkit.endpoint.BatchProcessingEndpoint.SettingsResponse;
-import com.timxs.storagetoolkit.extension.AttachmentReference;
 import com.timxs.storagetoolkit.extension.BatchProcessingStatus;
 import com.timxs.storagetoolkit.extension.BatchProcessingStatus.BatchProcessingStatusSpec;
 import com.timxs.storagetoolkit.extension.BatchProcessingStatus.BatchProcessingStatusStatus;
@@ -12,11 +11,14 @@ import com.timxs.storagetoolkit.extension.BatchProcessingStatus.Phase;
 import com.timxs.storagetoolkit.extension.BatchProcessingStatus.Progress;
 import com.timxs.storagetoolkit.extension.ProcessingLog;
 import com.timxs.storagetoolkit.model.ProcessingResult;
+import com.timxs.storagetoolkit.model.ProcessingSource;
 import com.timxs.storagetoolkit.model.ProcessingStatus;
 import com.timxs.storagetoolkit.service.BatchProcessingService;
 import com.timxs.storagetoolkit.service.ImageProcessor;
 import com.timxs.storagetoolkit.service.ProcessingLogService;
+import com.timxs.storagetoolkit.service.ReferenceReplacerService;
 import com.timxs.storagetoolkit.service.SettingsManager;
+import com.timxs.storagetoolkit.service.support.RetryUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -45,7 +47,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,6 +66,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     private final ProcessingLogService processingLogService;
     private final AttachmentService attachmentService;
     private final run.halo.app.infra.ExternalLinkProcessor externalLinkProcessor;
+    private final ReferenceReplacerService referenceReplacerService;
 
     private final DefaultDataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
@@ -86,7 +88,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     private final ConcurrentLinkedQueue<SkippedItem> memSkippedItems = new ConcurrentLinkedQueue<>();
 
     @Override
-    public Mono<BatchProcessingStatus> createTask(List<String> attachmentNames) {
+    public Mono<BatchProcessingStatus> createTask(List<String> attachmentNames, boolean replaceReferences) {
         if (attachmentNames == null || attachmentNames.isEmpty()) {
             return Mono.error(new IllegalArgumentException("附件列表不能为空"));
         }
@@ -148,7 +150,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                                 ReactiveSecurityContextHolder.getContext()
                                     .map(securityContext -> {
                                         // 异步执行处理任务，传递安全上下文
-                                        executeTask(taskId, updated, securityContext)
+                                        executeTask(taskId, updated, replaceReferences, securityContext)
                                             .onErrorResume(error -> {
                                                 log.error("批量处理任务失败: {}", error.getMessage(), error);
                                                 return recordTaskError(taskId, error.getMessage());
@@ -176,8 +178,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 status.getStatus().setEndTime(Instant.now());
                 log.warn("批量处理任务 {} 失败: {}", taskId, errorMessage);
                 return client.update(status)
-                    .retryWhen(reactor.util.retry.Retry.backoff(3, java.time.Duration.ofMillis(100))
-                        .filter(e -> e.getMessage() != null && e.getMessage().contains("optimistic")));
+                    .retryWhen(RetryUtils.optimisticLockRetry());
             });
     }
 
@@ -185,7 +186,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     /**
      * 执行批量处理任务
      */
-    private Mono<BatchProcessingStatus> executeTask(String taskId, BatchProcessingStatus status, SecurityContext securityContext) {
+    private Mono<BatchProcessingStatus> executeTask(String taskId, BatchProcessingStatus status, boolean replaceReferences, SecurityContext securityContext) {
         return settingsManager.getConfig()
             .zipWith(settingsManager.getKeepOriginalFile())
             .zipWith(settingsManager.getRemoteStorageForBatchProcessing())
@@ -201,7 +202,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 status.getStatus().setPhase(Phase.PROCESSING);
                 
                 return client.update(status)
-                    .flatMap(updated -> processAttachments(taskId, updated, config, keepOriginal, enableRemote, securityContext));
+                    .flatMap(updated -> processAttachments(taskId, updated, config, keepOriginal, enableRemote, replaceReferences, securityContext));
             });
     }
 
@@ -213,12 +214,13 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                                                             ProcessingConfig config,
                                                             boolean keepOriginal,
                                                             boolean enableRemote,
+                                                            boolean replaceReferences,
                                                             SecurityContext securityContext) {
         List<String> attachmentNames = status.getSpec().getAttachmentNames();
         int concurrency = config.getImageProcessingConcurrency();
 
-        log.info("开始批量处理任务 {}, 附件数: {}, 并发数: {}, 保留原文件: {}", 
-            taskId, attachmentNames.size(), concurrency, keepOriginal);
+        log.info("开始批量处理任务 {}, 附件数: {}, 并发数: {}, 保留原文件: {}, 替换引用: {}",
+            taskId, attachmentNames.size(), concurrency, keepOriginal, replaceReferences);
 
         return Flux.fromIterable(attachmentNames)
             .flatMap(attachmentName -> {
@@ -226,7 +228,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 if (cancelRequested.get()) {
                     return Mono.empty();
                 }
-                return processOneAttachment(taskId, attachmentName, config, keepOriginal, enableRemote, securityContext);
+                return processOneAttachment(taskId, attachmentName, config, keepOriginal, enableRemote, replaceReferences, securityContext);
             }, concurrency)
             .then(Mono.defer(() -> finalizeTask(taskId)));
     }
@@ -239,6 +241,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                                              ProcessingConfig config,
                                              boolean keepOriginal,
                                              boolean enableRemote,
+                                             boolean replaceReferences,
                                              SecurityContext securityContext) {
         return client.fetch(Attachment.class, attachmentName)
             .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
@@ -276,11 +279,11 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                             return recordFailed(attachmentName, displayName, "附件没有 permalink");
                         }
 
-                        return downloadAndProcess(taskId, attachment, config, keepOriginal, securityContext);
+                        return downloadAndProcess(taskId, attachment, config, keepOriginal, replaceReferences, securityContext);
                     });
             })
             .onErrorResume(error -> {
-                log.error("处理附件 {} 失败: {}", attachmentName, error.getMessage());
+                log.warn("处理附件 {} 失败: {}", attachmentName, error.getMessage());
                 return recordFailed(attachmentName, attachmentName, error.getMessage());
             });
     }
@@ -292,6 +295,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                                            Attachment attachment,
                                            ProcessingConfig config,
                                            boolean keepOriginal,
+                                           boolean replaceReferences,
                                            SecurityContext securityContext) {
         String attachmentName = attachment.getMetadata().getName();
         String displayName = attachment.getSpec().getDisplayName();
@@ -313,10 +317,10 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 long newSize = result.data().length;
                 long savedBytes = originalSize - newSize;
 
-                return updateAttachmentWithResult(taskId, attachment, result, keepOriginal, savedBytes, securityContext);
+                return updateAttachmentWithResult(taskId, attachment, result, keepOriginal, savedBytes, replaceReferences, securityContext);
             })
             .onErrorResume(error -> {
-                log.error("下载或处理附件 {} 失败: {}", displayName, error.getMessage());
+                log.warn("下载或处理附件 {} 失败: {}", displayName, error.getMessage());
                 return recordFailed(attachmentName, displayName, error.getMessage());
             });
     }
@@ -329,13 +333,16 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
             .flatMap(timeoutSeconds ->
                 Mono.fromCallable(() -> {
                     String fullUrl = externalLinkProcessor.processLink(permalink);
+                    String siteUrl = externalLinkProcessor.processLink("/");
                     HttpURLConnection conn = null;
                     try {
                         URL url = new URL(fullUrl);
                         conn = (HttpURLConnection) url.openConnection();
-                        conn.setConnectTimeout(30000);
-                        conn.setReadTimeout(60000);
+                        conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(timeoutSeconds));
+                        conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(timeoutSeconds));
                         conn.setRequestMethod("GET");
+                        conn.setRequestProperty("User-Agent", SettingsManager.DEFAULT_USER_AGENT);
+                        conn.setRequestProperty("Referer", siteUrl);
 
                         int responseCode = conn.getResponseCode();
                         if (responseCode != 200) {
@@ -363,12 +370,15 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
      * 策略：
      * - 保留原图：直接上传新文件，Halo 自动处理重名
      * - 不保留原图：先删除原图，再上传新文件（保持原文件名）
+     *
+     * @param replaceReferences 是否替换引用（仅在 keepOriginal=false 时生效）
      */
     private Mono<Void> updateAttachmentWithResult(String taskId,
                                                    Attachment attachment,
                                                    ProcessingResult result,
                                                    boolean keepOriginal,
                                                    long savedBytes,
+                                                   boolean replaceReferences,
                                                    SecurityContext securityContext) {
         String attachmentName = attachment.getMetadata().getName();
         String displayName = attachment.getSpec().getDisplayName();
@@ -376,6 +386,9 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
         String groupName = attachment.getSpec().getGroupName();
         long originalSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
         long newSize = result.data().length;
+
+        // 获取原附件的 permalink（用于引用替换）
+        String oldPermalink = attachment.getStatus() != null ? attachment.getStatus().getPermalink() : null;
 
         Flux<DataBuffer> content = Flux.just(bufferFactory.wrap(result.data()));
         MediaType mediaType = MediaType.parseMediaType(result.contentType());
@@ -389,22 +402,62 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
             // 保留原文件：直接上传新文件，Halo 自动处理重名
             uploadOperation = attachmentService.upload(policyName, groupName, result.filename(), content, mediaType)
                 .flatMap(newAttachment -> {
-                    log.info("批量处理上传成功（保留原图）: {} -> {}", displayName, newAttachment.getMetadata().getName());
-                    return createProcessingLog(taskId, displayName, result, originalSize, newSize, null)
+                    log.debug("批量处理上传成功（保留原图）: {} -> {}", displayName, newAttachment.getMetadata().getName());
+                    String newAttachmentName = newAttachment.getMetadata().getName();
+                    // 添加 null 检查
+                    String newPermalink = newAttachment.getStatus() != null ? newAttachment.getStatus().getPermalink() : null;
+
+                    // 执行引用替换（如果用户选择替换引用）
+                    Mono<Void> replaceReferencesMono = Mono.empty();
+                    if (replaceReferences && oldPermalink != null && newPermalink != null) {
+                        replaceReferencesMono = referenceReplacerService.replaceAfterBatchProcessing(
+                                attachmentName, newAttachmentName, oldPermalink, newPermalink)
+                            .doOnSuccess(replaceResult -> {
+                                if (replaceResult.getUpdatedSources() > 0) {
+                                    log.debug("批量处理后引用替换完成（保留原图）：{} 个内容源已更新", replaceResult.getUpdatedSources());
+                                }
+                            })
+                            .doOnError(e -> log.warn("批量处理后引用替换失败: {}", e.getMessage()))
+                            .onErrorResume(e -> Mono.empty()) // 引用替换失败不应影响主流程
+                            .then();
+                    }
+
+                    // 先替换引用，再记录成功
+                    return replaceReferencesMono
+                        .then(createProcessingLog(taskId, displayName, result, originalSize, newSize, null))
                         .then(recordSucceeded(attachmentName, displayName, savedBytes, true));
                 })
                 .onErrorResume(error -> {
-                    log.error("上传处理后的文件失败: {}, 错误: {}", displayName, error.getMessage());
+                    log.warn("上传处理后的文件失败: {}, 错误: {}", displayName, error.getMessage());
                     return recordFailed(attachmentName, displayName, "上传失败: " + error.getMessage());
                 });
         } else {
-            // 不保留原文件：先上传新文件，成功后再删除原图
+            // 不保留原文件：先上传新文件，成功后替换引用，再删除原图
             uploadOperation = attachmentService.upload(policyName, groupName, result.filename(), content, mediaType)
                 .flatMap(newAttachment -> {
-                    log.info("批量处理上传成功: {} -> {}", displayName, newAttachment.getMetadata().getName());
-                    // 上传成功后删除原附件
-                    return client.delete(attachment)
-                        .doOnSuccess(v -> log.info("已删除原附件: {}", displayName))
+                    log.debug("批量处理上传成功: {} -> {}", displayName, newAttachment.getMetadata().getName());
+                    String newAttachmentName = newAttachment.getMetadata().getName();
+                    String newPermalink = newAttachment.getStatus() != null ? newAttachment.getStatus().getPermalink() : null;
+
+                    // 执行引用替换（在删除原附件之前）
+                    Mono<Void> replaceReferencesMono = Mono.empty();
+                    if (replaceReferences && oldPermalink != null && newPermalink != null) {
+                        replaceReferencesMono = referenceReplacerService.replaceAfterBatchProcessing(
+                                attachmentName, newAttachmentName, oldPermalink, newPermalink)
+                            .doOnSuccess(replaceResult -> {
+                                if (replaceResult.getUpdatedSources() > 0) {
+                                    log.debug("批量处理后引用替换完成：{} 个内容源已更新", replaceResult.getUpdatedSources());
+                                }
+                            })
+                            .doOnError(e -> log.warn("批量处理后引用替换失败: {}", e.getMessage()))
+                            .onErrorResume(e -> Mono.empty()) // 引用替换失败不应影响主流程
+                            .then();
+                    }
+
+                    // 上传成功后先替换引用，再删除原附件
+                    return replaceReferencesMono
+                        .then(client.delete(attachment))
+                        .doOnSuccess(v -> log.debug("已删除原附件: {}", displayName))
                         .then(createProcessingLog(taskId, displayName, result, originalSize, newSize, null))
                         .then(recordSucceeded(attachmentName, displayName, savedBytes, false))
                         .onErrorResume(deleteError -> {
@@ -416,7 +469,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                         });
                 })
                 .onErrorResume(error -> {
-                    log.error("上传处理后的文件失败: {}, 错误: {}", displayName, error.getMessage());
+                    log.warn("上传处理后的文件失败: {}, 错误: {}", displayName, error.getMessage());
                     return recordFailed(attachmentName, displayName, "上传失败: " + error.getMessage());
                 });
         }
@@ -445,7 +498,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
         logSpec.setProcessedAt(Instant.now());
         // 优先使用传入的 errorMessage，否则使用 result.message()
         logSpec.setErrorMessage(errorMessage != null ? errorMessage : result.message());
-        logSpec.setSource("batch-processing");
+        logSpec.setSource(ProcessingSource.BATCH_PROCESSING);
         logEntry.setSpec(logSpec);
 
         return processingLogService.save(logEntry);
@@ -495,7 +548,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
         memSkippedItems.add(skippedItem);
 
         // 写入 ProcessingLog
-        return processingLogService.saveSkippedLog(displayName, null, fileSize, Instant.now(), reason, "batch-processing")
+        return processingLogService.saveSkippedLog(displayName, null, fileSize, Instant.now(), reason, ProcessingSource.BATCH_PROCESSING)
             .then();
     }
 
@@ -562,10 +615,9 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                     memProcessed.get(),
                     memTotal.get());
 
-                // 清空内存进度
-                clearMemoryProgress();
-
-                return client.update(status);
+                // 清空内存进度（在数据库更新完成后执行，避免竞态条件）
+                return client.update(status)
+                    .doOnSuccess(updated -> clearMemoryProgress());
             });
     }
 
@@ -633,26 +685,6 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                 }
                 return status;
             });
-    }
-
-    @Override
-    public Mono<Integer> countReferencedAttachments(List<String> attachmentNames) {
-        if (attachmentNames == null || attachmentNames.isEmpty()) {
-            return Mono.just(0);
-        }
-
-        Set<String> nameSet = Set.copyOf(attachmentNames);
-        
-        return client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(ref -> ref.getSpec() != null 
-                && ref.getSpec().getAttachmentName() != null
-                && nameSet.contains(ref.getSpec().getAttachmentName())
-                && ref.getStatus() != null 
-                && ref.getStatus().getReferenceCount() > 0)
-            .map(ref -> ref.getSpec().getAttachmentName())
-            .distinct()
-            .count()
-            .map(Long::intValue);
     }
 
     @Override

@@ -8,10 +8,9 @@ import org.jsoup.select.Elements;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-import java.net.URI;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -25,33 +24,33 @@ import java.util.regex.Pattern;
 public class ContentScanner {
 
     /**
-     * Markdown 图片语法 - 改进版，提取括号内完整内容（不在空格截断）
+     * Markdown 图片语法
      * 匹配 ![alt](url) 或 ![alt](url "title")
      */
     private static final Pattern MD_IMAGE_PATTERN =
         Pattern.compile("!\\[[^\\]]*\\]\\(([^)\"]+)(?:\\s+\"[^\"]*\")?\\)");
 
     /**
-     * Markdown 链接语法 - 改进版，提取括号内完整内容
+     * Markdown 链接语法
      * 匹配 [text](url) 或 [text](url "title")
      */
     private static final Pattern MD_LINK_PATTERN =
         Pattern.compile("(?<!!)\\[[^\\]]*\\]\\(([^)\"]+)(?:\\s+\"[^\"]*\")?\\)");
 
     /**
-     * 通用相对路径匹配（适用于 JSON、纯文本等）
-     * 匹配 /upload/ 开头的路径，支持包含空格和括号的文件名
-     * 要求以文件扩展名结尾（2-5个字母数字字符）
+     * 相对路径匹配（简化版）
+     * 匹配 / 开头、以扩展名结尾的路径
+     * 注意：会在代码中额外判断是否在完整 URL 范围内
      */
-    private static final Pattern UPLOAD_PATH_PATTERN =
-        Pattern.compile("(?<![a-zA-Z0-9.\\-])(/upload/[^\"'<>\\n]+?\\.\\w{2,5})(?=[\"'\\s<>\\]\\)\\},]|$)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern RELATIVE_PATH_PATTERN =
+        Pattern.compile("(/[^\"'<>\\n\\s]+?\\.\\w{2,5})(?=[\"'\\s<>\\]\\)\\},?]|$)", Pattern.CASE_INSENSITIVE);
 
     /**
-     * HTTP/HTTPS URL 匹配（适用于 JSON、纯文本等）
-     * 要求以文件扩展名结尾，支持包含空格的 URL
+     * HTTP/HTTPS URL 匹配
+     * 要求以文件扩展名结尾，支持带查询参数的 URL
      */
     private static final Pattern HTTP_URL_PATTERN =
-        Pattern.compile("([\"']?)(https?://[^\"'<>\\n]+?\\.\\w{2,5})\\1(?=[\"'\\s<>\\]\\)\\},]|$)", Pattern.CASE_INSENSITIVE);
+        Pattern.compile("(https?://[^\"'<>\\n\\s]+?\\.\\w{2,5})(?=[\"'\\s<>\\]\\)\\},?]|$)", Pattern.CASE_INSENSITIVE);
 
     /**
      * 提取结果，区分完整 URL 和相对路径
@@ -122,9 +121,9 @@ public class ContentScanner {
         for (Element el : elements) {
             String url = el.attr(attr);
             if (StringUtils.hasText(url)) {
-                String decodedUrl = decodeUrl(url.trim());
-                if (isValidUrl(decodedUrl)) {
-                    classifyUrl(decodedUrl, result);
+                String trimmedUrl = url.trim();
+                if (isValidUrl(trimmedUrl)) {
+                    classifyUrl(trimmedUrl, result);
                 }
             }
         }
@@ -141,9 +140,9 @@ public class ContentScanner {
         while (matcher.find()) {
             String url = matcher.group(1);
             if (StringUtils.hasText(url)) {
-                String decodedUrl = decodeUrl(url.trim());
-                if (isValidUrl(decodedUrl)) {
-                    classifyUrl(decodedUrl, result);
+                String trimmedUrl = url.trim();
+                if (isValidUrl(trimmedUrl)) {
+                    classifyUrl(trimmedUrl, result);
                 }
             }
         }
@@ -160,36 +159,69 @@ public class ContentScanner {
             return result;
         }
 
-        // Markdown 语法
-        extractByPatternWithType(content, MD_IMAGE_PATTERN, result, 1);
-        extractByPatternWithType(content, MD_LINK_PATTERN, result, 1);
+        // Markdown 语法（直接提取，自动分类）
+        extractByPattern(content, MD_IMAGE_PATTERN, result, 1);
+        extractByPattern(content, MD_LINK_PATTERN, result, 1);
 
-        // JSON、纯文本中的 URL（要求扩展名结尾）
-        extractByPatternWithType(content, HTTP_URL_PATTERN, result, 2);
-        extractByPatternWithType(content, UPLOAD_PATH_PATTERN, result, 1);
+        // 1. 先提取完整 URL，并记录位置范围
+        List<int[]> fullUrlRanges = new ArrayList<>();
+        Matcher httpMatcher = HTTP_URL_PATTERN.matcher(content);
+        while (httpMatcher.find()) {
+            String url = httpMatcher.group(1);
+            if (StringUtils.hasText(url)) {
+                String trimmedUrl = url.trim();
+                if (isValidUrl(trimmedUrl)) {
+                    result.fullUrls().add(trimmedUrl);
+                    fullUrlRanges.add(new int[]{httpMatcher.start(), httpMatcher.end()});
+                }
+            }
+        }
+
+        // 2. 提取相对路径，跳过在完整 URL 范围内的
+        Matcher relativeMatcher = RELATIVE_PATH_PATTERN.matcher(content);
+        while (relativeMatcher.find()) {
+            int start = relativeMatcher.start();
+
+            // 检查是否在某个完整 URL 的范围内
+            boolean insideFullUrl = false;
+            for (int[] range : fullUrlRanges) {
+                if (start >= range[0] && start < range[1]) {
+                    insideFullUrl = true;
+                    break;
+                }
+            }
+            if (insideFullUrl) {
+                continue;
+            }
+
+            // 额外检查：排除 // 开头（协议相对 URL）
+            if (start > 0 && content.charAt(start - 1) == '/') {
+                continue;
+            }
+
+            String url = relativeMatcher.group(1);
+            if (StringUtils.hasText(url)) {
+                String trimmedUrl = url.trim();
+                if (isValidUrl(trimmedUrl)) {
+                    result.relativePaths().add(trimmedUrl);
+                }
+            }
+        }
 
         return result;
     }
 
     /**
-     * 从内容中提取所有 URL（兼容旧接口，返回合并结果）
+     * 通用正则提取（用于 Markdown 等，自动分类）
      */
-    public Set<String> extractUrls(String content) {
-        ExtractResult result = extractUrlsWithType(content);
-        Set<String> urls = new HashSet<>();
-        urls.addAll(result.fullUrls());
-        urls.addAll(result.relativePaths());
-        return urls;
-    }
-
-    private void extractByPatternWithType(String content, Pattern pattern, ExtractResult result, int group) {
+    private void extractByPattern(String content, Pattern pattern, ExtractResult result, int group) {
         Matcher matcher = pattern.matcher(content);
         while (matcher.find()) {
             String url = matcher.group(group);
             if (StringUtils.hasText(url)) {
-                String decodedUrl = decodeUrl(url.trim());
-                if (isValidUrl(decodedUrl)) {
-                    classifyUrl(decodedUrl, result);
+                String trimmedUrl = url.trim();
+                if (isValidUrl(trimmedUrl)) {
+                    classifyUrl(trimmedUrl, result);
                 }
             }
         }
@@ -213,28 +245,6 @@ public class ContentScanner {
         return url != null && (url.startsWith("http://") || url.startsWith("https://"));
     }
 
-    /**
-     * 从完整 URL 中提取路径部分
-     */
-    public String extractPath(String fullUrl) {
-        if (!isFullUrl(fullUrl)) {
-            return fullUrl;
-        }
-        try {
-            return URI.create(fullUrl).getPath();
-        } catch (Exception e) {
-            // 解析失败，尝试简单截取
-            int idx = fullUrl.indexOf("://");
-            if (idx > 0) {
-                int pathStart = fullUrl.indexOf('/', idx + 3);
-                if (pathStart > 0) {
-                    return fullUrl.substring(pathStart);
-                }
-            }
-            return fullUrl;
-        }
-    }
-
     private boolean isValidUrl(String url) {
         if (url == null || url.isEmpty()) return false;
         if (url.startsWith("data:")) return false;
@@ -242,13 +252,5 @@ public class ContentScanner {
         if (url.startsWith("mailto:")) return false;
         if (url.startsWith("#")) return false;
         return true;
-    }
-
-    private String decodeUrl(String url) {
-        try {
-            return URLDecoder.decode(url, StandardCharsets.UTF_8);
-        } catch (IllegalArgumentException e) {
-            return url;
-        }
     }
 }

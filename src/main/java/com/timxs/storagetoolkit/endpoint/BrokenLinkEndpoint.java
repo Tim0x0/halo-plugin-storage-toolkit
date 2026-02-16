@@ -1,8 +1,8 @@
 package com.timxs.storagetoolkit.endpoint;
 
+import com.timxs.storagetoolkit.model.BrokenLinkReplaceResult;
 import com.timxs.storagetoolkit.model.BrokenLinkVo;
 import com.timxs.storagetoolkit.service.BrokenLinkService;
-import com.timxs.storagetoolkit.service.WhitelistService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -19,12 +19,11 @@ import java.util.List;
  */
 @ApiVersion("console.api.storage-toolkit.timxs.com/v1alpha1")
 @RestController
-@RequestMapping("/broken-links")
+@RequestMapping("/brokenlinks")
 @RequiredArgsConstructor
 public class BrokenLinkEndpoint {
 
     private final BrokenLinkService brokenLinkService;
-    private final WhitelistService whitelistService;
 
     /**
      * 开始断链扫描
@@ -56,28 +55,9 @@ public class BrokenLinkEndpoint {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String sourceType,
             @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String reason,
             @RequestParam(required = false) String sort) {
-        return brokenLinkService.listBrokenLinks(page, size, sourceType, keyword, sort);
-    }
-
-    /**
-     * 获取所有来源类型（用于前端筛选下拉框）
-     */
-    @GetMapping("/source-types")
-    public Mono<List<String>> getSourceTypes() {
-        return brokenLinkService.getSourceTypes();
-    }
-
-    /**
-     * 添加 URL 到忽略白名单
-     */
-    @PostMapping("/whitelist")
-    public Mono<WhitelistResponse> addToWhitelist(@RequestBody WhitelistRequest request) {
-        if (request.urls() == null || request.urls().isEmpty()) {
-            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "URL 列表不能为空"));
-        }
-        return brokenLinkService.addToWhitelist(request.urls())
-            .thenReturn(new WhitelistResponse("已添加 " + request.urls().size() + " 个 URL 到白名单", request.urls().size()));
+        return brokenLinkService.listBrokenLinks(page, size, sourceType, keyword, reason, sort);
     }
 
     /**
@@ -89,10 +69,40 @@ public class BrokenLinkEndpoint {
             .thenReturn(new ClearResponse("断链扫描结果已清空"));
     }
 
+    /**
+     * 替换断链
+     */
+    @PostMapping("/replace")
+    public Mono<ReplaceResponse> replaceBrokenLink(@RequestBody ReplaceRequest request) {
+        if (request.oldUrl() == null || request.oldUrl().isBlank()) {
+            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "旧 URL 不能为空"));
+        }
+        if (request.newUrl() == null || request.newUrl().isBlank()) {
+            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "新 URL 不能为空"));
+        }
+
+        return brokenLinkService.replaceBrokenLink(request.oldUrl(), request.newUrl())
+            .map(result -> new ReplaceResponse(
+                result.isAllSuccess(),
+                result.getTotalSources(),
+                result.getSuccessCount(),
+                result.getFailedCount(),
+                result.isBrokenLinkDeleted(),
+                result.getFailures().stream()
+                    .map(f -> new ReplaceFailure(
+                        f.getSourceType(),
+                        f.getSourceName(),
+                        f.getSourceTitle(),
+                        f.getErrorMessage()
+                    ))
+                    .toList()
+            ));
+    }
+
     private StatusResponse toStatusResponse(com.timxs.storagetoolkit.extension.BrokenLinkScanStatus status) {
         var s = status.getStatus();
         return new StatusResponse(
-            s != null && s.getPhase() != null ? s.getPhase().name() : null,
+            s != null ? s.getPhase() : null,
             s != null ? s.getStartTime() : null,
             s != null ? s.getLastScanTime() : null,
             s != null ? s.getScannedContentCount() : 0,
@@ -116,7 +126,21 @@ public class BrokenLinkEndpoint {
 
     public record ClearResponse(String message) {}
 
-    public record WhitelistRequest(List<String> urls) {}
+    public record ReplaceRequest(String oldUrl, String newUrl) {}
 
-    public record WhitelistResponse(String message, int count) {}
+    public record ReplaceResponse(
+        boolean allSuccess,
+        int totalSources,
+        int successCount,
+        int failedCount,
+        boolean brokenLinkDeleted,
+        List<ReplaceFailure> failures
+    ) {}
+
+    public record ReplaceFailure(
+        String sourceType,
+        String sourceName,
+        String sourceTitle,
+        String errorMessage
+    ) {}
 }

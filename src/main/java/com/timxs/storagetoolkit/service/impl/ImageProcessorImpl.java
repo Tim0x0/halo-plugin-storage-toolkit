@@ -237,7 +237,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             WatermarkConfig watermarkConfig = config.getWatermark();
             if (watermarkConfig.isEnabled()) {
                 try {
-                    image = applyWatermark(image, watermarkConfig);
+                    image = applyWatermark(image, watermarkConfig, config.getDownloadTimeoutSeconds());
                     processed = true;
                     watermarkApplied = true;
                     log.debug("水印添加成功: {}", originalFilename);
@@ -386,7 +386,7 @@ public class ImageProcessorImpl implements ImageProcessor {
      * @return 添加水印后的图片
      * @throws IllegalStateException 配置无效时抛出
      */
-    private BufferedImage applyWatermark(BufferedImage image, WatermarkConfig config) {
+    private BufferedImage applyWatermark(BufferedImage image, WatermarkConfig config, int downloadTimeoutSeconds) {
         log.debug("应用水印 - 类型: {}, 文字: '{}', 图片URL: '{}'", 
             config.getType(), config.getText(), config.getImageUrl());
         
@@ -410,7 +410,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             log.debug("图片水印配置 - URL: '{}', 缩放: {}, 位置: {}, 透明度: {}",
                 imageConfig.imageUrl(), imageConfig.scale(), 
                 imageConfig.position(), imageConfig.opacity());
-            BufferedImage watermarkImage = loadWatermarkImageFromUrl(config.getImageUrl());
+            BufferedImage watermarkImage = loadWatermarkImageFromUrl(config.getImageUrl(), downloadTimeoutSeconds);
             if (watermarkImage == null) {
                 throw new IllegalStateException("无法加载水印图片: " + config.getImageUrl());
             }
@@ -425,9 +425,10 @@ public class ImageProcessorImpl implements ImageProcessor {
      * 注意：不支持 WebP 格式的水印图片，请使用 PNG 或 JPEG
      *
      * @param imageUrl 图片URL
+     * @param downloadTimeoutSeconds 下载超时时间（秒）
      * @return 水印图片，加载失败返回 null
      */
-    private BufferedImage loadWatermarkImageFromUrl(String imageUrl) {
+    private BufferedImage loadWatermarkImageFromUrl(String imageUrl, int downloadTimeoutSeconds) {
         if (imageUrl == null || imageUrl.isBlank()) {
             log.warn("水印图片 URL 为空");
             return null;
@@ -444,7 +445,7 @@ public class ImageProcessorImpl implements ImageProcessor {
         }
 
         log.debug("水印图片未命中缓存，开始下载: {} -> {}", imageUrl, fullUrl);
-        BufferedImage image = doLoadWatermarkImage(fullUrl);
+        BufferedImage image = doLoadWatermarkImage(fullUrl, downloadTimeoutSeconds);
 
         // 加载成功则放入缓存
         if (image != null) {
@@ -459,15 +460,16 @@ public class ImageProcessorImpl implements ImageProcessor {
      * 实际从 URL 下载水印图片
      *
      * @param fullUrl 完整 URL
+     * @param downloadTimeoutSeconds 下载超时时间（秒）
      * @return 水印图片，加载失败返回 null
      */
-    private BufferedImage doLoadWatermarkImage(String fullUrl) {
+    private BufferedImage doLoadWatermarkImage(String fullUrl, int downloadTimeoutSeconds) {
         java.net.HttpURLConnection conn = null;
         try {
             java.net.URL url = java.net.URI.create(fullUrl).toURL();
             conn = (java.net.HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(15000);  // 连接超时 15 秒
-            conn.setReadTimeout(20000);     // 读取超时 20 秒
+            conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(downloadTimeoutSeconds));
+            conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(downloadTimeoutSeconds));
             conn.setRequestMethod("GET");
 
             try (java.io.InputStream is = conn.getInputStream()) {
@@ -475,15 +477,15 @@ public class ImageProcessorImpl implements ImageProcessor {
                 if (img != null) {
                     log.debug("水印图片加载成功: {}x{}, 类型: {}", img.getWidth(), img.getHeight(), img.getType());
                 } else {
-                    log.error("水印图片加载失败，ImageIO 返回 null。URL: {}", fullUrl);
+                    log.warn("水印图片加载失败，ImageIO 返回 null。URL: {}", fullUrl);
                 }
                 return img;
             }
         } catch (java.net.SocketTimeoutException e) {
-            log.error("加载水印图片超时: {} - {}", fullUrl, e.getMessage());
+            log.warn("加载水印图片超时: {} - {}", fullUrl, e.getMessage());
             return null;
         } catch (Exception e) {
-            log.error("从URL加载水印图片失败: {} - {}", fullUrl, e.getMessage());
+            log.warn("从URL加载水印图片失败: {} - {}", fullUrl, e.getMessage());
             return null;
         } finally {
             if (conn != null) {

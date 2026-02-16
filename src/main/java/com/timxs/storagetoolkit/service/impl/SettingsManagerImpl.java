@@ -11,6 +11,7 @@ import static com.timxs.storagetoolkit.service.SettingsManager.AttachmentUploadC
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 import run.halo.app.extension.ConfigMap;
 import run.halo.app.extension.ReactiveExtensionClient;
@@ -91,7 +92,7 @@ public class SettingsManagerImpl implements SettingsManager {
      * @return 完成信号
      */
     private Mono<Boolean> getGlobalSettings(ProcessingConfig config) {
-        return settingFetcher.get("global")
+        return settingFetcher.get("basic")
             .doOnNext(setting -> {
                 JsonNode basic = setting.get("basic");
                 if (basic != null) {
@@ -108,6 +109,9 @@ public class SettingsManagerImpl implements SettingsManager {
                     // 图片处理并发数
                     int concurrency = getInt(basic, "imageProcessingConcurrency", 3);
                     config.setImageProcessingConcurrency(Math.max(1, Math.min(10, concurrency)));
+                    // 下载超时时间
+                    int timeout = getInt(basic, "downloadTimeoutSeconds", 90);
+                    config.setDownloadTimeoutSeconds(Math.max(30, Math.min(300, timeout)));
                 }
             })
             .thenReturn(true)
@@ -197,6 +201,10 @@ public class SettingsManagerImpl implements SettingsManager {
                     watermark.setOpacity(getInt(watermarkNode, "opacity", 50));
                     watermark.setFontSize(getInt(watermarkNode, "fontSize", 25));
                     watermark.setColor(getString(watermarkNode, "color", "#b4b4b4"));
+                    // 字体名称：空字符串表示使用内置字体
+                    String fontName = getString(watermarkNode, "fontName", "");
+                    watermark.setFontName(fontName);
+                    log.debug("读取水印配置 - fontName: '{}'", fontName);
                     
                     // 字体大小模式（FIXED 或 ADAPTIVE）
                     String fontSizeModeStr = getString(watermarkNode, "fontSizeMode", "FIXED");
@@ -339,14 +347,19 @@ public class SettingsManagerImpl implements SettingsManager {
     }
 
     /**
-     * 获取批量处理下载超时时间（秒）
+     * 获取下载超时时间（秒）
+     * 从基础设置 -> 图片处理组读取
      */
     @Override
     public Mono<Integer> getDownloadTimeoutSeconds() {
-        return settingFetcher.get("batchProcessing")
+        return settingFetcher.get("basic")
             .map(setting -> {
-                int timeout = getInt(setting, "downloadTimeoutSeconds", 90);
-                return Math.max(30, Math.min(300, timeout));
+                JsonNode basic = setting.get("basic");
+                if (basic != null) {
+                    int timeout = getInt(basic, "downloadTimeoutSeconds", 90);
+                    return Math.max(30, Math.min(300, timeout));
+                }
+                return 90;
             })
             .defaultIfEmpty(90)
             .onErrorReturn(90);
@@ -375,12 +388,32 @@ public class SettingsManagerImpl implements SettingsManager {
 
     @Override
     public Mono<ExcludeSettings> getExcludeSettings() {
-        return settingFetcher.get("global")
+        // 并行读取 basic.analysisExclude 和 basic.duplicateScanning
+        return Mono.zip(
+            getBasicExcludeSettings(),
+            getBasicDuplicateScanSettings()
+        ).map(tuple -> {
+            ExcludeSettings exclude = tuple.getT1();
+            ExcludeSettings duplicate = tuple.getT2();
+            return new ExcludeSettings(
+                exclude.excludeGroups(),
+                exclude.excludePolicies(),
+                duplicate.md5TimeoutSeconds(),
+                duplicate.duplicateScanConcurrency()
+            );
+        })
+        .defaultIfEmpty(ExcludeSettings.defaultSettings())
+        .onErrorReturn(ExcludeSettings.defaultSettings());
+    }
+
+    /**
+     * 从 basic 组读取排除设置
+     */
+    private Mono<ExcludeSettings> getBasicExcludeSettings() {
+        return settingFetcher.get("basic")
             .map(setting -> {
                 java.util.Set<String> excludeGroups = new java.util.HashSet<>();
                 java.util.Set<String> excludePolicies = new java.util.HashSet<>();
-                int md5TimeoutSeconds = 90;
-                int duplicateScanConcurrency = 4;
 
                 JsonNode analysisExclude = setting.get("analysisExclude");
                 if (analysisExclude != null) {
@@ -389,19 +422,140 @@ public class SettingsManagerImpl implements SettingsManager {
 
                     List<String> policies = getStringList(analysisExclude, "excludePolicies");
                     if (policies != null) excludePolicies.addAll(policies);
+                }
+                return new ExcludeSettings(excludeGroups, excludePolicies, 90, 4);
+            })
+            .defaultIfEmpty(new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), 90, 4))
+            .onErrorReturn(new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), 90, 4));
+    }
 
-                    // 添加范围校验：MD5 计算超时 30-300 秒
-                    int timeout = getInt(analysisExclude, "md5TimeoutSeconds", 90);
+    /**
+     * 从 basic 组读取重复检测设置
+     */
+    private Mono<ExcludeSettings> getBasicDuplicateScanSettings() {
+        return settingFetcher.get("basic")
+            .map(setting -> {
+                int md5TimeoutSeconds = 90;
+                int duplicateScanConcurrency = 4;
+
+                JsonNode duplicateScanning = setting.get("duplicateScanning");
+                if (duplicateScanning != null) {
+                    int timeout = getInt(duplicateScanning, "md5TimeoutSeconds", 90);
                     md5TimeoutSeconds = Math.max(30, Math.min(300, timeout));
 
-                    // 添加范围校验：并发数 1-10
-                    int concurrency = getInt(analysisExclude, "duplicateScanConcurrency", 4);
+                    int concurrency = getInt(duplicateScanning, "duplicateScanConcurrency", 4);
                     duplicateScanConcurrency = Math.max(1, Math.min(10, concurrency));
                 }
-                return new ExcludeSettings(excludeGroups, excludePolicies, md5TimeoutSeconds, duplicateScanConcurrency);
+
+                return new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), md5TimeoutSeconds, duplicateScanConcurrency);
             })
-            .defaultIfEmpty(ExcludeSettings.defaultSettings())
-            .onErrorReturn(ExcludeSettings.defaultSettings());
+            .defaultIfEmpty(new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), 90, 4))
+            .onErrorReturn(new ExcludeSettings(java.util.Set.of(), java.util.Set.of(), 90, 4));
+    }
+
+    @Override
+    public Mono<BrokenLinkSettings> getBrokenLinkSettings() {
+        // 并行读取 basic 和 analysis 中的 brokenLink 配置
+        return Mono.zip(
+            getBasicBrokenLinkSettings(),
+            getAnalysisBrokenLinkSettings()
+        ).map(tuple -> {
+            BrokenLinkSettings basic = tuple.getT1();
+            BrokenLinkSettings analysis = tuple.getT2();
+            // 合并两个配置
+            return new BrokenLinkSettings(
+                analysis.checkExternalLinks(),
+                analysis.attachmentUrlPrefixes(),
+                basic.checkTimeout(),
+                basic.checkConcurrency()
+            );
+        })
+        .defaultIfEmpty(BrokenLinkSettings.defaultSettings())
+        .onErrorReturn(BrokenLinkSettings.defaultSettings());
+    }
+
+    @Override
+    public Mono<ProxySettings> getProxySettings() {
+        return settingFetcher.get("proxy")
+            .map(setting -> {
+                boolean enabled = getBoolean(setting, "proxyEnabled", false);
+                String host = getString(setting, "proxyHost", "");
+                int port = getInt(setting, "proxyPort", 7890);
+                port = Math.max(1, Math.min(65535, port));
+                return new ProxySettings(enabled, host, port);
+            })
+            .defaultIfEmpty(ProxySettings.disabled())
+            .onErrorReturn(ProxySettings.disabled());
+    }
+
+    /**
+     * 从 basic 组读取断链检测基础配置
+     */
+    private Mono<BrokenLinkSettings> getBasicBrokenLinkSettings() {
+        return settingFetcher.get("basic")
+            .map(setting -> {
+                JsonNode brokenLink = setting.get("brokenLink");
+                int checkTimeout = 5;
+                int checkConcurrency = 10;
+
+                if (brokenLink != null) {
+                    checkTimeout = getInt(brokenLink, "checkTimeout", 5);
+                    checkTimeout = Math.max(1, Math.min(30, checkTimeout));
+                    checkConcurrency = getInt(brokenLink, "checkConcurrency", 10);
+                    checkConcurrency = Math.max(1, Math.min(20, checkConcurrency));
+                }
+                return new BrokenLinkSettings(
+                    true,           // checkExternalLinks 占位
+                    List.of(),      // attachmentUrlPrefixes 占位
+                    checkTimeout,
+                    checkConcurrency
+                );
+            })
+            .defaultIfEmpty(new BrokenLinkSettings(
+                true, List.of(), 5, 10
+            ))
+            .onErrorReturn(new BrokenLinkSettings(
+                true, List.of(), 5, 10
+            ));
+    }
+
+    /**
+     * 从 analysis 组读取断链检测业务配置
+     */
+    private Mono<BrokenLinkSettings> getAnalysisBrokenLinkSettings() {
+        return settingFetcher.get("analysis")
+            .map(setting -> {
+                JsonNode brokenLink = setting.get("brokenLink");
+                boolean checkExternalLinks = true;
+                List<String> attachmentUrlPrefixes = List.of("/upload/");
+
+                if (brokenLink != null) {
+                    checkExternalLinks = getBoolean(brokenLink, "checkExternalLinks", true);
+                    // textarea 返回的是多行文本，按行分割
+                    String prefixesText = getString(brokenLink, "attachmentUrlPrefixes", "");
+                    if (StringUtils.hasText(prefixesText)) {
+                        List<String> prefixes = Arrays.stream(prefixesText.split("\\r?\\n"))
+                            .map(String::trim)
+                            .filter(StringUtils::hasText)
+                            .toList();
+                        if (!prefixes.isEmpty()) {
+                            attachmentUrlPrefixes = prefixes;
+                        }
+                    }
+                }
+                return new BrokenLinkSettings(
+                    checkExternalLinks,
+                    attachmentUrlPrefixes,
+                    5,      // checkTimeout 占位
+                    10      // checkConcurrency 占位
+                );
+            })
+            .defaultIfEmpty(new BrokenLinkSettings(
+                true, List.of("/upload/"), 5, 10
+            ))
+            .onErrorReturn(new BrokenLinkSettings(
+                true, List.of("/upload/"), 5, 10
+            ));
     }
 
     // ========== JsonNode 辅助方法 ==========
@@ -498,6 +652,17 @@ public class SettingsManagerImpl implements SettingsManager {
      * @return 字符串列表，如果为空则返回 null
      */
     private List<String> getStringList(JsonNode node, String key) {
+        return getStringList(node, key, null);
+    }
+
+    /**
+     * 从 JsonNode 获取字符串列表
+     * 支持数组类型、逗号分隔的字符串类型、以及 repeater 返回的对象数组
+     *
+     * @param fieldName 对象数组中要提取的字段名（如 repeater 的子字段名）
+     * @return 字符串列表，如果为空则返回 null
+     */
+    private List<String> getStringList(JsonNode node, String key, String fieldName) {
         JsonNode value = node.get(key);
         if (value != null) {
             List<String> list = new ArrayList<>();
@@ -505,7 +670,17 @@ public class SettingsManagerImpl implements SettingsManager {
                 // 数组类型
                 value.forEach(item -> {
                     if (item.isTextual()) {
+                        // 简单字符串数组
                         list.add(item.asText().trim());
+                    } else if (item.isObject() && fieldName != null) {
+                        // repeater 返回的对象数组，提取指定字段
+                        JsonNode fieldValue = item.get(fieldName);
+                        if (fieldValue != null && fieldValue.isTextual()) {
+                            String text = fieldValue.asText().trim();
+                            if (!text.isEmpty()) {
+                                list.add(text);
+                            }
+                        }
                     }
                 });
             } else if (value.isTextual()) {

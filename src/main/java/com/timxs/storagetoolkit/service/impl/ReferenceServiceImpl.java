@@ -5,14 +5,17 @@ import run.halo.app.infra.utils.JsonUtils;
 import run.halo.app.infra.ExternalLinkProcessor;
 import com.timxs.storagetoolkit.extension.AttachmentReference;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
+import com.timxs.storagetoolkit.model.CleanupReason;
 import com.timxs.storagetoolkit.model.CleanupResult;
+import com.timxs.storagetoolkit.service.CleanupLogService;
 import com.timxs.storagetoolkit.service.ContentScanner;
 import com.timxs.storagetoolkit.service.ReferenceService;
 import com.timxs.storagetoolkit.service.SettingsManager;
 import com.timxs.storagetoolkit.service.WhitelistService;
+import com.timxs.storagetoolkit.service.support.BrokenLinkDetector;
+import com.timxs.storagetoolkit.service.support.ReferenceScanContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -44,7 +47,6 @@ import static run.halo.app.extension.index.query.Queries.equal;
 import com.timxs.storagetoolkit.extension.BrokenLink;
 import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -67,6 +69,8 @@ public class ReferenceServiceImpl implements ReferenceService {
     private final SchemeManager schemeManager;
     private final ExternalLinkProcessor externalLinkProcessor;
     private final WhitelistService whitelistService;
+    private final BrokenLinkDetector brokenLinkDetector;
+    private final CleanupLogService cleanupLogService;
 
     private static final com.fasterxml.jackson.databind.ObjectMapper objectMapper = JsonUtils.mapper();
 
@@ -82,6 +86,9 @@ public class ReferenceServiceImpl implements ReferenceService {
     // Docsme 文档项目 GVK (doc.halo.run/v1alpha1/Project)
     private static final GroupVersionKind PROJECT_GVK =
         new GroupVersionKind("doc.halo.run", "v1alpha1", "Project");
+    // DocTree GVK (doc.halo.run/v1alpha1/DocTree)
+    private static final GroupVersionKind DOC_TREE_GVK =
+        new GroupVersionKind("doc.halo.run", "v1alpha1", "DocTree");
 
     // 内存中的扫描标志（用于检测服务重启）
     private final AtomicInteger scanningFlag = new AtomicInteger(0);
@@ -128,12 +135,43 @@ public class ReferenceServiceImpl implements ReferenceService {
                         result -> log.info("扫描完成: {}", result),
                         error -> {
                             log.error("扫描失败", error);
-                            // 更新状态为错误，避免状态停留在 SCANNING
-                            updateScanError(updated, error.getMessage()).subscribe();
+                            // 更新引用扫描状态为错误
+                            updateScanError(updated, error.getMessage()).subscribe(
+                                v -> {},
+                                err -> log.error("更新引用扫描错误状态失败", err)
+                            );
+                            // 同时更新断链扫描状态为错误（避免断链扫描一直停留在 SCANNING）
+                            updateBrokenLinkScanError(error.getMessage()).subscribe(
+                                v -> {},
+                                err -> log.error("更新断链扫描错误状态失败", err)
+                            );
                         }
                     );
                 return Mono.just(updated);
             });
+    }
+
+    /**
+     * 更新断链扫描错误状态
+     */
+    private Mono<Void> updateBrokenLinkScanError(String errorMessage) {
+        return client.fetch(BrokenLinkScanStatus.class, BrokenLinkScanStatus.SINGLETON_NAME)
+            .switchIfEmpty(Mono.defer(() -> {
+                BrokenLinkScanStatus status = new BrokenLinkScanStatus();
+                status.setMetadata(new Metadata());
+                status.getMetadata().setName(BrokenLinkScanStatus.SINGLETON_NAME);
+                status.setStatus(new BrokenLinkScanStatus.BrokenLinkScanStatusStatus());
+                return client.create(status);
+            }))
+            .flatMap(status -> {
+                if (status.getStatus() == null) {
+                    status.setStatus(new BrokenLinkScanStatus.BrokenLinkScanStatusStatus());
+                }
+                status.getStatus().setPhase(BrokenLinkScanStatus.Phase.ERROR);
+                status.getStatus().setErrorMessage(errorMessage);
+                return client.update(status);
+            })
+            .then();
     }
 
     /**
@@ -142,52 +180,51 @@ public class ReferenceServiceImpl implements ReferenceService {
     private Mono<ReferenceScanStatus> performScan(ReferenceScanStatus status) {
         log.info("开始扫描附件引用...");
 
-        // 分开存储完整 URL 和相对路径的引用
-        Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources = new ConcurrentHashMap<>();
-        Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources = new ConcurrentHashMap<>();
-        
+        // 使用 ReferenceScanContext 管理扫描状态
+        ReferenceScanContext context = new ReferenceScanContext(externalLinkProcessor, contentScanner);
+
         // 本次扫描的时间戳，用于生成唯一的记录名称
         long scanTimestamp = System.currentTimeMillis();
 
-        // 先标记所有现有记录为待删除，然后提交删除
-        return markAllAsPendingDeleteAndDelete()
+        // 先删除所有现有记录
+        return deleteAllExistingRecords()
             .then(settingsManager.getAnalysisSettings())
             .flatMap(settings -> {
                 // 根据配置决定扫描哪些内容
                 List<Mono<Void>> scanTasks = new ArrayList<>();
 
                 if (settings.scanPosts()) {
-                    scanTasks.add(scanPosts(fullUrlToSources, relativePathToSources));
+                    scanTasks.add(scanPosts(context));
                 }
                 if (settings.scanPages()) {
-                    scanTasks.add(scanSinglePages(fullUrlToSources, relativePathToSources));
+                    scanTasks.add(scanSinglePages(context));
                 }
                 if (settings.scanComments()) {
-                    scanTasks.add(scanComments(fullUrlToSources, relativePathToSources));
-                    scanTasks.add(scanReplies(fullUrlToSources, relativePathToSources));
+                    scanTasks.add(scanComments(context));
+                    scanTasks.add(scanReplies(context));
                 }
                 if (settings.scanMoments()) {
-                    scanTasks.add(scanMoments(fullUrlToSources, relativePathToSources));
+                    scanTasks.add(scanMoments(context));
                 }
                 if (settings.scanPhotos()) {
-                    scanTasks.add(scanPhotos(fullUrlToSources, relativePathToSources));
+                    scanTasks.add(scanPhotos(context));
                 }
                 if (settings.scanDocs()) {
-                    scanTasks.add(scanDocs(fullUrlToSources, relativePathToSources));
+                    scanTasks.add(scanDocs(context));
                 }
                 // 系统设置始终扫描
-                scanTasks.add(scanConfigMaps(fullUrlToSources, relativePathToSources));
+                scanTasks.add(scanConfigMaps(context));
                 // 用户头像始终扫描
-                scanTasks.add(scanUserAvatars(fullUrlToSources, relativePathToSources));
+                scanTasks.add(scanUserAvatars(context));
 
                 // 顺序执行所有扫描任务
                 return Flux.concat(scanTasks).then();
             })
             .then(Mono.defer(() -> {
-                log.info("内容扫描完成，完整URL: {} 个, 相对路径: {} 个", 
-                    fullUrlToSources.size(), relativePathToSources.size());
+                log.debug("内容扫描完成，完整URL: {} 个, 相对路径: {} 个",
+                    context.getFullUrlToSources().size(), context.getRelativePathToSources().size());
                 // 匹配附件并创建新的引用关系（使用时间戳避免名称冲突）
-                return matchAndCreateReferences(fullUrlToSources, relativePathToSources, status, scanTimestamp);
+                return matchAndCreateReferences(context, status, scanTimestamp);
             }))
             .onErrorResume(error -> {
                 log.error("扫描过程出错", error);
@@ -196,34 +233,20 @@ public class ReferenceServiceImpl implements ReferenceService {
     }
 
     /**
-     * 标记所有现有记录为待删除，然后提交删除
+     * 删除所有现有记录
      */
-    private Mono<Void> markAllAsPendingDeleteAndDelete() {
+    private Mono<Void> deleteAllExistingRecords() {
         // 删除旧的引用记录
         Mono<Void> deleteReferences = client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
-            .flatMap(ref -> {
-                if (ref.getStatus() == null) {
-                    ref.setStatus(new AttachmentReference.AttachmentReferenceStatus());
-                }
-                ref.getStatus().setPendingDelete(true);
-                return client.update(ref)
-                    .flatMap(updated -> client.delete(updated));
-            })
+            .flatMap(client::delete)
             .then()
-            .doOnSuccess(v -> log.info("已删除所有旧引用记录"));
+            .doOnSuccess(v -> log.debug("已删除所有旧引用记录"));
 
         // 删除旧的断链记录
         Mono<Void> deleteBrokenLinks = client.listAll(BrokenLink.class, ListOptions.builder().build(), Sort.unsorted())
-            .flatMap(link -> {
-                if (link.getStatus() == null) {
-                    link.setStatus(new BrokenLink.BrokenLinkStatus());
-                }
-                link.getStatus().setPendingDelete(true);
-                return client.update(link)
-                    .flatMap(updated -> client.delete(updated));
-            })
+            .flatMap(client::delete)
             .then()
-            .doOnSuccess(v -> log.info("已删除所有旧断链记录"));
+            .doOnSuccess(v -> log.debug("已删除所有旧断链记录"));
 
         return Mono.when(deleteReferences, deleteBrokenLinks);
     }
@@ -231,8 +254,8 @@ public class ReferenceServiceImpl implements ReferenceService {
     /**
      * 扫描文章
      */
-    private Mono<Void> scanPosts(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                  Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanPosts(ReferenceScanContext context) {
+        log.debug("开始扫描 文章...");
         return client.listAll(Post.class, ListOptions.builder().build(), Sort.unsorted())
             .flatMap(post -> {
                 String postName = post.getMetadata().getName();
@@ -240,41 +263,51 @@ public class ReferenceServiceImpl implements ReferenceService {
                 String postUrl = "/archives/" + post.getSpec().getSlug();
                 // 检查是否在回收站
                 boolean isDeleted = post.getSpec().getDeleted() != null && post.getSpec().getDeleted();
+                // 检查是否为草稿（headSnapshot != releaseSnapshot）
+                String headSnapshot = post.getSpec().getHeadSnapshot();
+                String releaseSnapshot = post.getSpec().getReleaseSnapshot();
+                boolean isDraft = !StringUtils.hasText(releaseSnapshot)
+                    || !releaseSnapshot.equals(headSnapshot);
+                // 内容类型：草稿用 draft，已发布用 content
+                String contentType = isDraft ? "draft" : "content";
 
-                // 扫描封面图
+                // 扫描封面图（封面没有草稿概念）
                 String cover = post.getSpec().getCover();
                 if (StringUtils.hasText(cover)) {
                     AttachmentReference.ReferenceSource coverSource = createSource(
                         "Post", postName, postTitle, postUrl, isDeleted, "cover");
-                    addUrlSourceWithType(fullUrlToSources, relativePathToSources, cover, coverSource);
+                    context.addUrl(cover, coverSource);
                 }
 
                 // 使用 PostContentService 获取完整内容
                 return postContentService.getHeadContent(postName)
                     .doOnNext(contentWrapper -> {
                         AttachmentReference.ReferenceSource contentSource = createSource(
-                            "Post", postName, postTitle, postUrl, isDeleted, "content");
+                            "Post", postName, postTitle, postUrl, isDeleted, contentType);
 
                         // 扫描渲染后的 HTML 内容（使用 Jsoup 解析）
                         String htmlContent = contentWrapper.getContent();
                         if (StringUtils.hasText(htmlContent)) {
-                            addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, contentSource);
+                            ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
+                            context.addExtractResult(result, contentSource);
                         }
                     })
                     .onErrorResume(e -> {
                         log.warn("获取文章 {} 内容失败: {}", postTitle, e.getMessage());
                         return Mono.empty();
                     })
-                    .then();
+                    .thenReturn(1);
             })
+            .count()
+            .doOnNext(count -> log.debug("文章 扫描完成，共扫描 {} 条记录", count))
             .then();
     }
 
     /**
      * 扫描独立页面
      */
-    private Mono<Void> scanSinglePages(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                        Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanSinglePages(ReferenceScanContext context) {
+        log.debug("开始扫描 独立页面...");
         return client.listAll(SinglePage.class, ListOptions.builder().build(), Sort.unsorted())
             .flatMap(page -> {
                 String pageName = page.getMetadata().getName();
@@ -282,36 +315,46 @@ public class ReferenceServiceImpl implements ReferenceService {
                 String pageUrl = "/" + page.getSpec().getSlug();
                 // 检查是否在回收站
                 boolean isDeleted = page.getSpec().getDeleted() != null && page.getSpec().getDeleted();
+                // 检查是否为草稿（headSnapshot != releaseSnapshot）
+                String headSnapshot = page.getSpec().getHeadSnapshot();
+                String releaseSnapshot = page.getSpec().getReleaseSnapshot();
+                boolean isDraft = !StringUtils.hasText(releaseSnapshot)
+                    || !releaseSnapshot.equals(headSnapshot);
+                // 内容类型：草稿用 draft，已发布用 content
+                String contentType = isDraft ? "draft" : "content";
 
-                // 扫描封面图
+                // 扫描封面图（封面没有草稿概念）
                 String cover = page.getSpec().getCover();
                 if (StringUtils.hasText(cover)) {
                     AttachmentReference.ReferenceSource coverSource = createSource(
                         "SinglePage", pageName, pageTitle, pageUrl, isDeleted, "cover");
-                    addUrlSourceWithType(fullUrlToSources, relativePathToSources, cover, coverSource);
+                    context.addUrl(cover, coverSource);
                 }
 
                 // 获取页面内容（使用 Snapshot 合并逻辑）
                 String headSnapshotName = page.getSpec().getHeadSnapshot();
                 String baseSnapshotName = page.getSpec().getBaseSnapshot();
-                
+
                 return getSinglePageContent(headSnapshotName, baseSnapshotName)
                     .doOnNext(contentWrapper -> {
                         AttachmentReference.ReferenceSource contentSource = createSource(
-                            "SinglePage", pageName, pageTitle, pageUrl, isDeleted, "content");
+                            "SinglePage", pageName, pageTitle, pageUrl, isDeleted, contentType);
 
                         // 扫描渲染后的 HTML 内容（使用 Jsoup 解析）
                         String htmlContent = contentWrapper.getContent();
                         if (StringUtils.hasText(htmlContent)) {
-                            addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, contentSource);
+                            ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
+                            context.addExtractResult(result, contentSource);
                         }
                     })
                     .onErrorResume(e -> {
                         log.warn("获取页面 {} 内容失败: {}", pageTitle, e.getMessage());
                         return Mono.empty();
                     })
-                    .then();
+                    .thenReturn(1);
             })
+            .count()
+            .doOnNext(count -> log.debug("独立页面 扫描完成，共扫描 {} 条记录", count))
             .then();
     }
 
@@ -335,8 +378,8 @@ public class ReferenceServiceImpl implements ReferenceService {
     /**
      * 扫描评论
      */
-    private Mono<Void> scanComments(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                     Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanComments(ReferenceScanContext context) {
+        log.debug("开始扫描 评论...");
         return client.listAll(Comment.class, ListOptions.builder().build(), Sort.unsorted())
             .doOnNext(comment -> {
                 String commentName = comment.getMetadata().getName();
@@ -356,16 +399,19 @@ public class ReferenceServiceImpl implements ReferenceService {
 
                 AttachmentReference.ReferenceSource source = createSource(
                     "Comment", commentName, sourceTitle, null, false, "comment");
-                addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, content, source);
+                ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(content);
+                context.addExtractResult(result, source);
             })
+            .count()
+            .doOnNext(count -> log.debug("评论 扫描完成，共扫描 {} 条记录", count))
             .then();
     }
 
     /**
      * 扫描回复
      */
-    private Mono<Void> scanReplies(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                    Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanReplies(ReferenceScanContext context) {
+        log.debug("开始扫描 回复...");
         return client.listAll(Reply.class, ListOptions.builder().build(), Sort.unsorted())
             .doOnNext(reply -> {
                 String replyName = reply.getMetadata().getName();
@@ -384,8 +430,11 @@ public class ReferenceServiceImpl implements ReferenceService {
 
                 AttachmentReference.ReferenceSource source = createSource(
                     "Reply", replyName, sourceTitle, null, false, "reply");
-                addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, content, source);
+                ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(content);
+                context.addExtractResult(result, source);
             })
+            .count()
+            .doOnNext(count -> log.debug("回复 扫描完成，共扫描 {} 条记录", count))
             .then();
     }
 
@@ -393,62 +442,75 @@ public class ReferenceServiceImpl implements ReferenceService {
      * 扫描系统配置、插件配置和主题配置
      * 分别扫描系统设置、所有插件设置、所有主题设置的 ConfigMap
      */
-    private Mono<Void> scanConfigMaps(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                       Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanConfigMaps(ReferenceScanContext context) {
         // 1. 扫描系统设置
+        log.debug("开始扫描 系统设置...");
         Mono<Void> scanSystem = client.fetch(ConfigMap.class, "system")
             .doOnNext(configMap -> {
-                scanConfigMapData(configMap, "SystemSetting", "系统设置", "system", 
+                scanConfigMapData(configMap, "SystemSetting", "系统设置", "system",
                     groupKey -> "/console/settings?tab=" + groupKey,
-                    fullUrlToSources, relativePathToSources);
+                    context);
             })
+            .doOnSuccess(v -> log.debug("系统设置 扫描完成，共扫描 1 条记录"))
             .then();
 
         // 2. 扫描所有插件设置
-        Mono<Void> scanPlugins = client.listAll(Plugin.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(plugin -> StringUtils.hasText(plugin.getSpec().getConfigMapName()))
-            .flatMap(plugin -> {
-                String pluginName = plugin.getMetadata().getName();
-                String displayName = plugin.getSpec().getDisplayName();
-                String configMapName = plugin.getSpec().getConfigMapName();
-                String settingName = plugin.getSpec().getSettingName();
-                String sourceTitle = (StringUtils.hasText(displayName) ? displayName : pluginName) + " 插件设置";
-                
-                return client.fetch(ConfigMap.class, configMapName)
-                    .doOnNext(configMap -> {
-                        scanConfigMapData(configMap, "PluginSetting", sourceTitle, settingName,
-                            groupKey -> "/console/plugins/" + pluginName + "?tab=" + groupKey,
-                            fullUrlToSources, relativePathToSources);
-                    })
-                    .onErrorResume(e -> {
-                        log.warn("获取插件 {} 的 ConfigMap {} 失败: {}", pluginName, configMapName, e.getMessage());
-                        return Mono.empty();
-                    });
-            })
-            .then();
+        Mono<Void> scanPlugins = Mono.defer(() -> {
+            log.debug("开始扫描 插件设置...");
+            return client.listAll(Plugin.class, ListOptions.builder().build(), Sort.unsorted())
+                .filter(plugin -> StringUtils.hasText(plugin.getSpec().getConfigMapName()))
+                .flatMap(plugin -> {
+                    String pluginName = plugin.getMetadata().getName();
+                    String displayName = plugin.getSpec().getDisplayName();
+                    String configMapName = plugin.getSpec().getConfigMapName();
+                    String settingName = plugin.getSpec().getSettingName();
+                    String sourceTitle = (StringUtils.hasText(displayName) ? displayName : pluginName) + " 插件设置";
+
+                    return client.fetch(ConfigMap.class, configMapName)
+                        .doOnNext(configMap -> {
+                            scanConfigMapData(configMap, "PluginSetting", sourceTitle, settingName,
+                                groupKey -> "/console/plugins/" + pluginName + "?tab=" + groupKey,
+                                context);
+                        })
+                        .thenReturn(1)
+                        .onErrorResume(e -> {
+                            log.warn("获取插件 {} 的 ConfigMap {} 失败: {}", pluginName, configMapName, e.getMessage());
+                            return Mono.just(0);
+                        });
+                })
+                .count()
+                .doOnNext(count -> log.debug("插件设置 扫描完成，共扫描 {} 条记录", count))
+                .then();
+        });
 
         // 3. 扫描所有主题设置
-        Mono<Void> scanThemes = client.listAll(Theme.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(theme -> StringUtils.hasText(theme.getSpec().getConfigMapName()))
-            .flatMap(theme -> {
-                String themeName = theme.getMetadata().getName();
-                String displayName = theme.getSpec().getDisplayName();
-                String configMapName = theme.getSpec().getConfigMapName();
-                String settingName = theme.getSpec().getSettingName();
-                String sourceTitle = (StringUtils.hasText(displayName) ? displayName : themeName) + " 主题设置";
-                
-                return client.fetch(ConfigMap.class, configMapName)
-                    .doOnNext(configMap -> {
-                        scanConfigMapData(configMap, "ThemeSetting", sourceTitle, settingName,
-                            groupKey -> "/console/theme/settings/" + groupKey,
-                            fullUrlToSources, relativePathToSources);
-                    })
-                    .onErrorResume(e -> {
-                        log.warn("获取主题 {} 的 ConfigMap {} 失败: {}", themeName, configMapName, e.getMessage());
-                        return Mono.empty();
-                    });
-            })
-            .then();
+        Mono<Void> scanThemes = Mono.defer(() -> {
+            log.debug("开始扫描 主题设置...");
+            return client.listAll(Theme.class, ListOptions.builder().build(), Sort.unsorted())
+                .filter(theme -> StringUtils.hasText(theme.getSpec().getConfigMapName()))
+                .flatMap(theme -> {
+                    String themeName = theme.getMetadata().getName();
+                    String displayName = theme.getSpec().getDisplayName();
+                    String configMapName = theme.getSpec().getConfigMapName();
+                    String settingName = theme.getSpec().getSettingName();
+                    String sourceTitle = (StringUtils.hasText(displayName) ? displayName : themeName) + " 主题设置";
+
+                    return client.fetch(ConfigMap.class, configMapName)
+                        .doOnNext(configMap -> {
+                            scanConfigMapData(configMap, "ThemeSetting", sourceTitle, settingName,
+                                groupKey -> "/console/theme/settings/" + groupKey,
+                                context);
+                        })
+                        .thenReturn(1)
+                        .onErrorResume(e -> {
+                            log.warn("获取主题 {} 的 ConfigMap {} 失败: {}", themeName, configMapName, e.getMessage());
+                            return Mono.just(0);
+                        });
+                })
+                .count()
+                .doOnNext(count -> log.debug("主题设置 扫描完成，共扫描 {} 条记录", count))
+                .then();
+        });
 
         return scanSystem.then(scanPlugins).then(scanThemes);
     }
@@ -460,11 +522,11 @@ public class ReferenceServiceImpl implements ReferenceService {
      * @param sourceTitle 显示标题
      * @param settingName Setting 名称（用于异步查询 label）
      * @param urlBuilder URL 构建函数，接收 groupKey 返回完整 URL
+     * @param context 扫描上下文
      */
     private void scanConfigMapData(ConfigMap configMap, String sourceType, String sourceTitle, String settingName,
                                     java.util.function.Function<String, String> urlBuilder,
-                                    Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                    Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+                                    ReferenceScanContext context) {
         String configMapName = configMap.getMetadata().getName();
         Map<String, String> data = configMap.getData();
         if (data == null) return;
@@ -472,297 +534,282 @@ public class ReferenceServiceImpl implements ReferenceService {
         // 扫描每个配置项
         data.forEach((groupKey, jsonValue) -> {
             if (!StringUtils.hasText(jsonValue)) return;
-            
+
             String sourceUrl = urlBuilder.apply(groupKey);
-            
+            AttachmentReference.ReferenceSource source = createSource(
+                sourceType, configMapName, sourceTitle,
+                sourceUrl, false, groupKey, settingName);
+
             try {
                 JsonNode groupNode = objectMapper.readTree(jsonValue);
-                if (groupNode.isObject()) {
-                    // 遍历 JSON 对象的每个字段
-                    groupNode.fields().forEachRemaining(entry -> {
-                        String fieldValue = entry.getValue().asText();
-                        if (StringUtils.hasText(fieldValue)) {
-                            // referenceType 存储 groupKey，settingName 用于异步查询 label
-                            AttachmentReference.ReferenceSource source = createSource(
-                                sourceType, configMapName, sourceTitle, 
-                                sourceUrl, false, groupKey, settingName);
-                            addExtractedUrls(fullUrlToSources, relativePathToSources, fieldValue, source);
-                        }
-                    });
-                } else {
-                    // 非对象类型，直接扫描
-                    AttachmentReference.ReferenceSource source = createSource(
-                        sourceType, configMapName, sourceTitle, 
-                        sourceUrl, false, groupKey, settingName);
-                    addExtractedUrls(fullUrlToSources, relativePathToSources, jsonValue, source);
-                }
+                // 递归扫描 JSON 节点
+                scanJsonNode(groupNode, source, context);
             } catch (Exception e) {
                 // JSON 解析失败，直接扫描原始值
-                AttachmentReference.ReferenceSource source = createSource(
-                    sourceType, configMapName, sourceTitle, 
-                    sourceUrl, false, groupKey, settingName);
-                addExtractedUrls(fullUrlToSources, relativePathToSources, jsonValue, source);
+                ContentScanner.ExtractResult result = contentScanner.extractUrlsWithType(jsonValue);
+                context.addExtractResult(result, source);
             }
         });
     }
 
     /**
+     * 递归扫描 JSON 节点，提取所有文本值中的 URL
+     * @param node JSON 节点
+     * @param source 引用来源
+     * @param context 扫描上下文
+     */
+    private void scanJsonNode(JsonNode node, AttachmentReference.ReferenceSource source, ReferenceScanContext context) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return;
+        }
+
+        if (node.isTextual()) {
+            // 文本节点，提取 URL
+            String text = node.asText();
+            if (StringUtils.hasText(text)) {
+                ContentScanner.ExtractResult result = contentScanner.extractUrlsWithType(text);
+                context.addExtractResult(result, source);
+            }
+        } else if (node.isObject()) {
+            // 对象节点，递归处理每个字段
+            node.fields().forEachRemaining(entry -> {
+                scanJsonNode(entry.getValue(), source, context);
+            });
+        } else if (node.isArray()) {
+            // 数组节点，递归处理每个元素
+            for (JsonNode element : node) {
+                scanJsonNode(element, source, context);
+            }
+        }
+        // 其他类型（数字、布尔等）不处理
+    }
+
+    /**
      * 扫描用户头像
      */
-    private Mono<Void> scanUserAvatars(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                        Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanUserAvatars(ReferenceScanContext context) {
+        log.debug("开始扫描 用户头像...");
         return client.listAll(User.class, ListOptions.builder().build(), Sort.unsorted())
             .doOnNext(user -> {
                 String userName = user.getMetadata().getName();
                 String displayName = user.getSpec().getDisplayName();
                 String avatar = user.getSpec().getAvatar();
-                
+
                 if (!StringUtils.hasText(avatar)) {
                     return;
                 }
-                
+
                 // sourceTitle 显示用户显示名，sourceUrl 指向用户主页
                 String userUrl = user.getStatus() != null ? user.getStatus().getPermalink() : null;
                 AttachmentReference.ReferenceSource source = createSource(
                     "User", userName, displayName, userUrl, false, "avatar");
-                addUrlSourceWithType(fullUrlToSources, relativePathToSources, avatar, source);
+                context.addUrl(avatar, source);
             })
+            .count()
+            .doOnNext(count -> log.debug("用户头像 扫描完成，共扫描 {} 条记录", count))
             .then();
     }
 
     /**
      * 扫描瞬间（Moment 插件）
-     * 提取 spec.content.html（HTML 内容）和 spec.content.medium（媒体文件）
      */
-    private Mono<Void> scanMoments(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                    Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
-        var schemeOpt = schemeManager.fetch(MOMENT_GVK);
-        if (schemeOpt.isEmpty()) {
-            log.info("瞬间插件未安装（GVK: {}），跳过扫描", MOMENT_GVK);
-            return Mono.empty();
-        }
+    private Mono<Void> scanMoments(ReferenceScanContext context) {
+        return scanExtensions(context, MOMENT_GVK, "瞬间", (ext, rootNode) -> {
+            String momentName = ext.getMetadata().getName();
+            String sourceUrl = "/moments/" + momentName;
+            JsonNode specNode = rootNode.get("spec");
 
-        log.info("开始扫描瞬间，GVK: {}", MOMENT_GVK);
-        return client.listAll(schemeOpt.get().type(), ListOptions.builder().build(), Sort.unsorted())
-            .doOnNext(ext -> {
-                try {
-                    String momentName = ext.getMetadata().getName();
-                    String sourceUrl = "/moments/" + momentName;
-                    String json = objectMapper.writeValueAsString(ext);
-                    JsonNode rootNode = objectMapper.readTree(json);
-                    JsonNode specNode = rootNode.get("spec");
+            if (specNode != null) {
+                JsonNode contentNode = specNode.get("content");
+                if (contentNode != null) {
+                    // 1. 提取 HTML 内容
+                    String htmlContent = contentNode.has("html") ? contentNode.get("html").asText(null) : null;
+                    if (StringUtils.hasText(htmlContent)) {
+                        AttachmentReference.ReferenceSource htmlSource = createSource(
+                            "Moment", momentName, "瞬间", sourceUrl, false, "content");
+                        ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
+                        context.addExtractResult(result, htmlSource);
+                    }
 
-                    if (specNode != null) {
-                        JsonNode contentNode = specNode.get("content");
-                        if (contentNode != null) {
-                            // 提取 HTML 内容
-                            String htmlContent = contentNode.has("html") ? contentNode.get("html").asText(null) : null;
-                            if (StringUtils.hasText(htmlContent)) {
-                                AttachmentReference.ReferenceSource htmlSource = createSource(
-                                    "Moment", momentName, "瞬间", sourceUrl, false, "content");
-                                addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, htmlSource);
-                            }
-
-                            // 提取媒体文件 URL
-                            JsonNode mediumNode = contentNode.get("medium");
-                            if (mediumNode != null && mediumNode.isArray()) {
-                                for (JsonNode mediaItem : mediumNode) {
-                                    String mediaUrl = mediaItem.has("url") ? mediaItem.get("url").asText(null) : null;
-                                    if (StringUtils.hasText(mediaUrl)) {
-                                        AttachmentReference.ReferenceSource mediaSource = createSource(
-                                            "Moment", momentName, "瞬间", sourceUrl, false, "media");
-                                        addUrlSourceWithType(fullUrlToSources, relativePathToSources, mediaUrl, mediaSource);
-                                    }
-                                }
+                    // 2. 提取媒体文件 URL
+                    JsonNode mediumNode = contentNode.get("medium");
+                    if (mediumNode != null && mediumNode.isArray()) {
+                        for (JsonNode mediaItem : mediumNode) {
+                            String mediaUrl = mediaItem.has("url") ? mediaItem.get("url").asText(null) : null;
+                            if (StringUtils.hasText(mediaUrl)) {
+                                AttachmentReference.ReferenceSource mediaSource = createSource(
+                                    "Moment", momentName, "瞬间", sourceUrl, false, "media");
+                                context.addUrl(mediaUrl, mediaSource);
                             }
                         }
                     }
-                } catch (Exception e) {
-                    log.warn("扫描瞬间失败: {}", e.getMessage());
                 }
-            })
-            .count()
-            .doOnNext(count -> log.info("瞬间扫描完成，共扫描 {} 条记录", count))
-            .then()
-            .onErrorResume(e -> {
-                log.warn("瞬间扫描出错: {}", e.getMessage());
-                return Mono.empty();
-            });
+            }
+            return Mono.empty();
+        });
     }
 
     /**
      * 扫描图库（Photos 插件）
-     * 分别提取 url（内容）和 cover（封面）字段
      */
-    private Mono<Void> scanPhotos(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                   Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
-        var schemeOpt = schemeManager.fetch(PHOTO_GVK);
-        if (schemeOpt.isEmpty()) {
-            log.info("图库插件未安装（GVK: {}），跳过扫描", PHOTO_GVK);
-            return Mono.empty();
-        }
-        
-        log.info("开始扫描图库，GVK: {}", PHOTO_GVK);
-        return client.listAll(schemeOpt.get().type(), ListOptions.builder().build(), Sort.unsorted())
-            .doOnNext(ext -> {
-                try {
-                    String name = ext.getMetadata().getName();
-                    String json = objectMapper.writeValueAsString(ext);
-                    JsonNode specNode = objectMapper.readTree(json).get("spec");
-                    
-                    if (specNode != null) {
-                        // 提取 url 字段（内容）
-                        String url = specNode.has("url") ? specNode.get("url").asText(null) : null;
-                        if (StringUtils.hasText(url)) {
-                            AttachmentReference.ReferenceSource urlSource = createSource(
-                                "Photo", name, "图库", "/photos", false, "content");
-                            addUrlSourceWithType(fullUrlToSources, relativePathToSources, url, urlSource);
-                        }
-                        
-                        // 提取 cover 字段（封面），避免与 url 重复
-                        String cover = specNode.has("cover") ? specNode.get("cover").asText(null) : null;
-                        if (StringUtils.hasText(cover) && !cover.equals(url)) {
-                            AttachmentReference.ReferenceSource coverSource = createSource(
-                                "Photo", name, "图库", "/photos", false, "cover");
-                            addUrlSourceWithType(fullUrlToSources, relativePathToSources, cover, coverSource);
-                        }
-                    }
-                } catch (Exception e) {
-                    log.warn("扫描图库失败: {}", e.getMessage());
+    private Mono<Void> scanPhotos(ReferenceScanContext context) {
+        return scanExtensions(context, PHOTO_GVK, "图库", (ext, rootNode) -> {
+            String name = ext.getMetadata().getName();
+            JsonNode specNode = rootNode.get("spec");
+
+            if (specNode != null) {
+                // 1. 提取 url 字段（内容）
+                String url = specNode.has("url") ? specNode.get("url").asText(null) : null;
+                if (StringUtils.hasText(url)) {
+                    AttachmentReference.ReferenceSource urlSource = createSource(
+                        "Photo", name, "图库", "/photos", false, "content");
+                    context.addUrl(url, urlSource);
                 }
-            })
-            .count()
-            .doOnNext(count -> log.info("图库扫描完成，共扫描 {} 条记录", count))
-            .then()
-            .onErrorResume(e -> {
-                log.warn("图库扫描出错: {}", e.getMessage());
-                return Mono.empty();
-            });
+
+                // 2. 提取 cover 字段（封面）
+                String cover = specNode.has("cover") ? specNode.get("cover").asText(null) : null;
+                if (StringUtils.hasText(cover) && !cover.equals(url)) {
+                    AttachmentReference.ReferenceSource coverSource = createSource(
+                        "Photo", name, "图库", "/photos", false, "cover");
+                    context.addUrl(cover, coverSource);
+                }
+            }
+            return Mono.empty();
+        });
     }
 
     /**
      * 扫描文档（Docsme 插件）
-     * 包括 Doc 内容和 Project 图标
      */
-    private Mono<Void> scanDocs(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                 Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources) {
+    private Mono<Void> scanDocs(ReferenceScanContext context) {
         var docSchemeOpt = schemeManager.fetch(DOC_GVK);
         var projectSchemeOpt = schemeManager.fetch(PROJECT_GVK);
-        
+
         if (docSchemeOpt.isEmpty() && projectSchemeOpt.isEmpty()) {
-            log.info("Docsme 文档插件未安装，跳过扫描");
+            log.debug("Docsme 文档插件未安装，跳过扫描");
             return Mono.empty();
         }
-        
+
         // 1. 扫描 Doc 内容
-        Mono<Void> scanDocContent = Mono.empty();
-        if (docSchemeOpt.isPresent()) {
-            log.info("开始扫描文档内容，GVK: {}", DOC_GVK);
-            scanDocContent = client.listAll(docSchemeOpt.get().type(), ListOptions.builder().build(), Sort.unsorted())
-                .flatMap(ext -> {
-                    String docName = ext.getMetadata().getName();
-                    try {
-                        // 从 Doc 的 spec 中获取 headSnapshot
-                        String json = objectMapper.writeValueAsString(ext);
-                        JsonNode docNode = objectMapper.readTree(json);
-                        JsonNode specNode = docNode.get("spec");
-                        
-                        String headSnapshotName = specNode != null && specNode.has("headSnapshot") 
-                            ? specNode.get("headSnapshot").asText() : null;
-                        String baseSnapshotName = specNode != null && specNode.has("releaseSnapshot")
-                            ? specNode.get("releaseSnapshot").asText() : null;
-                        
-                        // 如果没有 baseSnapshot，使用 headSnapshot
-                        if (!StringUtils.hasText(baseSnapshotName)) {
-                            baseSnapshotName = headSnapshotName;
+        Mono<Void> scanDocContent = scanExtensions(context, DOC_GVK, "文档内容", (ext, rootNode) -> {
+            String docName = ext.getMetadata().getName();
+            JsonNode specNode = rootNode.get("spec");
+
+            String headSnapshotName = specNode != null && specNode.has("headSnapshot")
+                ? specNode.get("headSnapshot").asText() : null;
+            String releaseSnapshotName = specNode != null && specNode.has("releaseSnapshot")
+                ? specNode.get("releaseSnapshot").asText() : null;
+
+            // 检查是否为草稿
+            boolean isDraft = !StringUtils.hasText(releaseSnapshotName)
+                || !releaseSnapshotName.equals(headSnapshotName);
+            // 内容类型：草稿用 draft，已发布用 content
+            String contentType = isDraft ? "draft" : "content";
+
+            // 用于 patch 计算的 base
+            String baseSnapshotName = StringUtils.hasText(releaseSnapshotName)
+                ? releaseSnapshotName : headSnapshotName;
+
+            if (StringUtils.hasText(headSnapshotName) && StringUtils.hasText(baseSnapshotName)) {
+                AttachmentReference.ReferenceSource source = createSource(
+                    "Doc", docName, "Doc:" + docName, null, false, contentType);
+
+                final String finalBaseSnapshotName = baseSnapshotName;
+                return client.fetch(Snapshot.class, baseSnapshotName)
+                    .flatMap(baseSnapshot -> {
+                        if (headSnapshotName.equals(finalBaseSnapshotName)) {
+                            return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
                         }
-                        
-                        // 存储 Doc:docName 格式，详情弹窗再查询 DocTree 获取标题
-                        AttachmentReference.ReferenceSource source = createSource(
-                            "Doc", docName, "Doc:" + docName, null, false, "content");
-                        
-                        // 获取 Snapshot 内容
-                        if (StringUtils.hasText(headSnapshotName) && StringUtils.hasText(baseSnapshotName)) {
-                            final String finalBaseSnapshotName = baseSnapshotName;
-                            return client.fetch(Snapshot.class, baseSnapshotName)
-                                .flatMap(baseSnapshot -> {
-                                    if (headSnapshotName.equals(finalBaseSnapshotName)) {
-                                        return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
-                                    }
-                                    return client.fetch(Snapshot.class, headSnapshotName)
-                                        .map(headSnapshot -> ContentWrapper.patchSnapshot(headSnapshot, baseSnapshot));
-                                })
-                                .doOnNext(contentWrapper -> {
-                                    // 扫描渲染后的 HTML 内容（使用 Jsoup 解析）
-                                    String htmlContent = contentWrapper.getContent();
-                                    if (StringUtils.hasText(htmlContent)) {
-                                        addExtractedUrlsFromHtml(fullUrlToSources, relativePathToSources, htmlContent, source);
-                                    }
-                                })
-                                .onErrorResume(e -> {
-                                    log.warn("获取文档 {} 内容失败: {}", docName, e.getMessage());
-                                    return Mono.empty();
-                                })
-                                .then(Mono.just(1));
+                        return client.fetch(Snapshot.class, headSnapshotName)
+                            .map(headSnapshot -> ContentWrapper.patchSnapshot(headSnapshot, baseSnapshot));
+                    })
+                    .doOnNext(contentWrapper -> {
+                        String htmlContent = contentWrapper.getContent();
+                        if (StringUtils.hasText(htmlContent)) {
+                            ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
+                            context.addExtractResult(result, source);
                         }
-                    } catch (Exception e) {
-                        log.warn("扫描文档 {} 失败: {}", docName, e.getMessage());
-                    }
-                    return Mono.just(0);
-                })
-                .count()
-                .doOnNext(count -> log.info("文档内容扫描完成，共扫描 {} 条记录", count))
-                .then();
-        }
-        
+                    })
+                    .onErrorResume(e -> {
+                        log.warn("获取文档 {} 内容失败: {}", docName, e.getMessage());
+                        return Mono.empty();
+                    })
+                    .then();
+            }
+            return Mono.empty();
+        });
+
         // 2. 扫描 Project 图标
-        Mono<Void> scanProjectIcon = Mono.empty();
-        if (projectSchemeOpt.isPresent()) {
-            log.info("开始扫描文档项目图标，GVK: {}", PROJECT_GVK);
-            scanProjectIcon = client.listAll(projectSchemeOpt.get().type(), ListOptions.builder().build(), Sort.unsorted())
-                .doOnNext(ext -> {
-                    try {
-                        String json = objectMapper.writeValueAsString(ext);
-                        JsonNode projectNode = objectMapper.readTree(json);
-                        JsonNode specNode = projectNode.get("spec");
-                        JsonNode statusNode = projectNode.get("status");
-                        
-                        String projectName = ext.getMetadata().getName();
-                        String displayName = specNode != null && specNode.has("displayName") 
-                            ? specNode.get("displayName").asText() : projectName;
-                        String icon = specNode != null && specNode.has("icon") 
-                            ? specNode.get("icon").asText() : null;
-                        String permalink = statusNode != null && statusNode.has("permalink")
-                            ? statusNode.get("permalink").asText() : null;
-                        
-                        if (StringUtils.hasText(icon)) {
-                            // sourceType 使用 Doc，referenceType 使用 icon 区分
-                            AttachmentReference.ReferenceSource source = createSource(
-                                "Doc", projectName, displayName, permalink, false, "icon");
-                            addUrlSourceWithType(fullUrlToSources, relativePathToSources, icon, source);
-                        }
-                    } catch (Exception e) {
-                        log.warn("扫描文档项目失败: {}", e.getMessage());
-                    }
-                })
-                .count()
-                .doOnNext(count -> log.info("文档项目图标扫描完成，共扫描 {} 条记录", count))
-                .then();
+        Mono<Void> scanProjectIcon = scanExtensions(context, PROJECT_GVK, "文档项目图标", (ext, rootNode) -> {
+            JsonNode specNode = rootNode.get("spec");
+            JsonNode statusNode = rootNode.get("status");
+
+            String projectName = ext.getMetadata().getName();
+            String displayName = specNode != null && specNode.has("displayName")
+                ? specNode.get("displayName").asText() : projectName;
+            String icon = specNode != null && specNode.has("icon")
+                ? specNode.get("icon").asText() : null;
+            String permalink = statusNode != null && statusNode.has("permalink")
+                ? statusNode.get("permalink").asText() : null;
+
+            if (StringUtils.hasText(icon)) {
+                AttachmentReference.ReferenceSource source = createSource(
+                    "Doc", projectName, displayName, permalink, false, "icon");
+                context.addUrl(icon, source);
+            }
+            return Mono.empty();
+        });
+
+        return scanDocContent.then(scanProjectIcon);
+    }
+
+    /**
+     * 通用扩展扫描方法
+     * 处理 GVK 检查、列表获取、JSON 解析和错误处理
+     */
+    private Mono<Void> scanExtensions(ReferenceScanContext context,
+                                      GroupVersionKind gvk,
+                                      String logName,
+                                      ExtensionProcessor processor) {
+        var schemeOpt = schemeManager.fetch(gvk);
+        if (schemeOpt.isEmpty()) {
+            log.debug("{} 未安装（GVK: {}），跳过扫描", logName, gvk);
+            return Mono.empty();
         }
-        
-        return scanDocContent
-            .then(scanProjectIcon)
+
+        log.debug("开始扫描 {}，GVK: {}", logName, gvk);
+        return client.listAll(schemeOpt.get().type(), ListOptions.builder().build(), Sort.unsorted())
+            .concatMap(ext -> {
+                try {
+                    String json = objectMapper.writeValueAsString(ext);
+                    JsonNode rootNode = objectMapper.readTree(json);
+                    // 处理完成后返回 1，用于计数
+                    return processor.process(ext, rootNode).thenReturn(1);
+                } catch (Exception e) {
+                    log.warn("扫描 {} 失败: {}", logName, e.getMessage());
+                    // 即使处理失败也返回 1，表示已处理该记录
+                    return Mono.just(1);
+                }
+            })
+            .count()
+            .doOnNext(count -> log.debug("{} 扫描完成，共扫描 {} 条记录", logName, count))
+            .then()
             .onErrorResume(e -> {
-                log.warn("文档扫描出错: {}", e.getMessage());
+                log.warn("{} 扫描出错: {}", logName, e.getMessage());
                 return Mono.empty();
             });
+    }
+
+    @FunctionalInterface
+    private interface ExtensionProcessor {
+        Mono<Void> process(run.halo.app.extension.Extension extension, JsonNode rootNode);
     }
 
     /**
      * 创建引用源对象
      */
     private AttachmentReference.ReferenceSource createSource(
-            String sourceType, String sourceName, String sourceTitle, 
+            String sourceType, String sourceName, String sourceTitle,
             String sourceUrl, boolean deleted, String referenceType) {
         return createSource(sourceType, sourceName, sourceTitle, sourceUrl, deleted, referenceType, null);
     }
@@ -771,7 +818,7 @@ public class ReferenceServiceImpl implements ReferenceService {
      * 创建引用源对象（带 settingName）
      */
     private AttachmentReference.ReferenceSource createSource(
-            String sourceType, String sourceName, String sourceTitle, 
+            String sourceType, String sourceName, String sourceTitle,
             String sourceUrl, boolean deleted, String referenceType, String settingName) {
         AttachmentReference.ReferenceSource source = new AttachmentReference.ReferenceSource();
         source.setSourceType(sourceType);
@@ -785,218 +832,95 @@ public class ReferenceServiceImpl implements ReferenceService {
     }
 
     /**
-     * 从内容中提取 URL 并分类添加到对应的 Map（用于非 HTML 内容）
-     */
-    private void addExtractedUrls(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                   Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
-                                   String content, AttachmentReference.ReferenceSource source) {
-        ContentScanner.ExtractResult result = contentScanner.extractUrlsWithType(content);
-        result.fullUrls().forEach(url -> addUrlSource(fullUrlToSources, url, source));
-        result.relativePaths().forEach(path -> addUrlSource(relativePathToSources, path, source));
-    }
-
-    /**
-     * 从 HTML 内容中提取 URL 并分类添加到对应的 Map（使用 Jsoup 解析）
-     */
-    private void addExtractedUrlsFromHtml(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                           Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
-                                           String htmlContent, AttachmentReference.ReferenceSource source) {
-        ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
-        result.fullUrls().forEach(url -> addUrlSource(fullUrlToSources, url, source));
-        result.relativePaths().forEach(path -> addUrlSource(relativePathToSources, path, source));
-    }
-
-    /**
-     * 添加单个 URL 到引用源映射（根据类型分类）
-     *
-     * 处理逻辑：
-     * 1. 完整 URL（http/https）-> 直接存入 fullUrlToSources
-     * 2. 相对路径 -> 拼接成完整 URL 后存入 fullUrlToSources，同时存入 relativePathToSources 作为备用匹配
-     */
-    private void addUrlSourceWithType(Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-                                       Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
-                                       String url, AttachmentReference.ReferenceSource source) {
-        if (!StringUtils.hasText(url) || url.startsWith("data:")) {
-            return;
-        }
-        if (contentScanner.isFullUrl(url)) {
-            // 完整 URL 直接存入
-            fullUrlToSources.computeIfAbsent(url, k -> ConcurrentHashMap.newKeySet()).add(source);
-        } else {
-            // 相对路径：规范化后存入 relativePathToSources
-            String normalizedPath = normalizePath(url);
-            if (StringUtils.hasText(normalizedPath)) {
-                relativePathToSources.computeIfAbsent(normalizedPath, k -> ConcurrentHashMap.newKeySet()).add(source);
-                // 同时拼接成完整 URL 存入 fullUrlToSources
-                String fullUrl = externalLinkProcessor.processLink(normalizedPath);
-                if (StringUtils.hasText(fullUrl) && contentScanner.isFullUrl(fullUrl)) {
-                    fullUrlToSources.computeIfAbsent(fullUrl, k -> ConcurrentHashMap.newKeySet()).add(source);
-                }
-            }
-        }
-    }
-
-    /**
-     * 规范化相对路径
-     * - /upload/image.jpg -> /upload/image.jpg（不变）
-     * - upload/image.jpg -> /upload/image.jpg（补 /）
-     * - ./upload/image.jpg -> /upload/image.jpg（去 ./）
-     * - ../upload/image.jpg -> null（无法处理，忽略）
-     */
-    private String normalizePath(String path) {
-        if (!StringUtils.hasText(path)) {
-            return null;
-        }
-        // 去除 ./ 前缀
-        if (path.startsWith("./")) {
-            path = path.substring(2);
-        }
-        // 无法处理 ../ 开头的路径
-        if (path.startsWith("../")) {
-            return null;
-        }
-        // 补 / 前缀
-        if (!path.startsWith("/")) {
-            path = "/" + path;
-        }
-        return path;
-    }
-
-    /**
-     * 添加 URL 到引用源映射
-     */
-    private void addUrlSource(Map<String, Set<AttachmentReference.ReferenceSource>> urlToSources,
-                              String url, AttachmentReference.ReferenceSource source) {
-        if (!StringUtils.hasText(url) || url.startsWith("data:")) {
-            return;
-        }
-        urlToSources.computeIfAbsent(url, k -> ConcurrentHashMap.newKeySet()).add(source);
-    }
-
-    /**
      * 匹配附件并创建新的引用关系
      *
      * 匹配逻辑：
-     * 1. 完整 URL：精确匹配附件的 permalink
-     * 2. 相对路径：匹配附件 permalink 的路径部分（仅限本地附件）
+     * 1. 完整 URL：精确匹配附件的 permalink（必须完全一致，包括域名）
+     * 2. 相对路径 permalink：拼成完整 URL 后再精确匹配
      *
-     * 同时检测断链：提取到的 URL 中未匹配到任何附件的即为断链
+     * 注意：不进行路径部分匹配，确保域名不同的资源不会错误匹配
      */
     private Mono<ReferenceScanStatus> matchAndCreateReferences(
-            Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources,
-            Map<String, Set<AttachmentReference.ReferenceSource>> relativePathToSources,
+            ReferenceScanContext context,
             ReferenceScanStatus status,
             long scanTimestamp) {
 
-        log.info("提取到的完整URL: {} 个, 相对路径: {} 个", fullUrlToSources.size(), relativePathToSources.size());
+        Map<String, Set<AttachmentReference.ReferenceSource>> fullUrlToSources = context.getFullUrlToSources();
+        log.debug("提取到的完整URL: {} 个, 相对路径: {} 个",
+            fullUrlToSources.size(), context.getRelativePathToSources().size());
 
         final AtomicInteger totalCount = new AtomicInteger(0);
         final AtomicInteger referencedCount = new AtomicInteger(0);
         final AtomicLong unreferencedSize = new AtomicLong(0);
         final AtomicInteger brokenLinkCount = new AtomicInteger(0);
 
-        // 用于记录被成功匹配的 URL（用于断链检测）
+        // 用于记录被成功匹配的完整 URL（用于断链检测）
         final Set<String> matchedFullUrls = ConcurrentHashMap.newKeySet();
-        final Set<String> matchedRelativePaths = ConcurrentHashMap.newKeySet();
 
         return settingsManager.getExcludeSettings()
             .flatMapMany(excludeSettings ->
                 client.listAll(Attachment.class, ListOptions.builder().build(), Sort.unsorted())
                     .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
-                    .filter(attachment -> {
-                        // 过滤排除的分组
-                        String groupName = attachment.getSpec().getGroupName();
-                        if (groupName != null && excludeSettings.excludeGroups().contains(groupName)) {
-                            return false;
+                    .flatMap(attachment -> {
+                        String attachmentName = attachment.getMetadata().getName();
+                        String permalink = attachment.getStatus() != null ? attachment.getStatus().getPermalink() : null;
+                        long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
+
+                        // 排除判断（仅影响引用统计，不影响断链检测的 matchedFullUrls）
+                        boolean excluded = isExcludedAttachment(attachment, excludeSettings);
+
+                        Set<AttachmentReference.ReferenceSource> sources = new HashSet<>();
+                        if (StringUtils.hasText(permalink)) {
+                            // 1. 完整 URL 精确匹配
+                            if (fullUrlToSources.containsKey(permalink)) {
+                                matchedFullUrls.add(permalink);
+                                if (!excluded) {
+                                    sources.addAll(fullUrlToSources.get(permalink));
+                                }
+                            }
+
+                            // 2. 相对路径拼接完整 URL 再匹配
+                            if (!contentScanner.isFullUrl(permalink)) {
+                                String fullPermalink = externalLinkProcessor.processLink(permalink);
+                                if (fullUrlToSources.containsKey(fullPermalink)) {
+                                    matchedFullUrls.add(fullPermalink);
+                                    if (!excluded) {
+                                        sources.addAll(fullUrlToSources.get(fullPermalink));
+                                    }
+                                }
+                            }
                         }
-                        // 过滤排除的存储策略
-                        String policyName = attachment.getSpec().getPolicyName();
-                        if (policyName != null && excludeSettings.excludePolicies().contains(policyName)) {
-                            return false;
+
+                        // 排除的附件不参与引用统计
+                        if (excluded) {
+                            return Mono.<Void>empty();
                         }
-                        return true;
+
+                        totalCount.incrementAndGet();
+                        if (!sources.isEmpty()) {
+                            referencedCount.incrementAndGet();
+                        } else {
+                            unreferencedSize.addAndGet(fileSize);
+                        }
+
+                        return createAttachmentReference(attachmentName, sources, scanTimestamp);
                     })
             )
-            .flatMap(attachment -> {
-                String attachmentName = attachment.getMetadata().getName();
-                String permalink = attachment.getStatus() != null ? attachment.getStatus().getPermalink() : null;
-                long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
-
-                totalCount.incrementAndGet();
-
-                Set<AttachmentReference.ReferenceSource> sources = new HashSet<>();
-                if (StringUtils.hasText(permalink)) {
-                    // 对 permalink 进行 URL 解码后匹配
-                    String decodedPermalink = decodeUrl(permalink);
-
-                    // 1. 完整 URL 精确匹配（permalink 本身是完整 URL）
-                    if (fullUrlToSources.containsKey(decodedPermalink)) {
-                        sources.addAll(fullUrlToSources.get(decodedPermalink));
-                        matchedFullUrls.add(decodedPermalink);
-                        log.debug("附件 {} 完整URL匹配成功: {}", attachmentName, decodedPermalink);
-                    }
-
-                    // 2. 如果 permalink 是相对路径，拼成完整 URL 再匹配
-                    if (!contentScanner.isFullUrl(decodedPermalink)) {
-                        String fullPermalink = externalLinkProcessor.processLink(decodedPermalink);
-                        if (fullUrlToSources.containsKey(fullPermalink)) {
-                            sources.addAll(fullUrlToSources.get(fullPermalink));
-                            matchedFullUrls.add(fullPermalink);
-                            log.debug("附件 {} 拼接完整URL匹配成功: {} -> {}", attachmentName, decodedPermalink, fullPermalink);
-                        }
-                    }
-
-                    // 3. 相对路径匹配（提取 permalink 的路径部分）
-                    String permalinkPath = contentScanner.extractPath(decodedPermalink);
-                    if (relativePathToSources.containsKey(permalinkPath)) {
-                        sources.addAll(relativePathToSources.get(permalinkPath));
-                        matchedRelativePaths.add(permalinkPath);
-                        log.debug("附件 {} 相对路径匹配成功: {}", attachmentName, permalinkPath);
-                    }
-                }
-
-                if (!sources.isEmpty()) {
-                    referencedCount.incrementAndGet();
-                } else {
-                    unreferencedSize.addAndGet(fileSize);
-                }
-
-                return createAttachmentReference(attachmentName, sources, scanTimestamp);
-            })
             .then(Mono.defer(() -> {
-                // 附件遍历完成后，在同一个流程中创建断链记录
-                // 未匹配的 URL 即为断链（需要先获取白名单进行过滤）
-                return getBrokenLinkWhitelist()
-                    .flatMap(whitelist -> {
-                        Instant now = Instant.now();
-                        List<Mono<BrokenLink>> brokenLinkTasks = new ArrayList<>();
-
-                        // 检查完整 URL 中未匹配的
-                        for (Map.Entry<String, Set<AttachmentReference.ReferenceSource>> entry : fullUrlToSources.entrySet()) {
-                            String url = entry.getKey();
-                            if (!matchedFullUrls.contains(url) && !isInWhitelist(url, whitelist)) {
-                                Set<AttachmentReference.ReferenceSource> sources = entry.getValue();
-                                // 每个 URL 创建一条断链记录，包含所有引用源
-                                brokenLinkTasks.add(createBrokenLinkRecord(url, sources, now, scanTimestamp));
-                                brokenLinkCount.incrementAndGet();
-                            }
-                        }
-
-                        // 检查相对路径中未匹配的
-                        for (Map.Entry<String, Set<AttachmentReference.ReferenceSource>> entry : relativePathToSources.entrySet()) {
-                            String path = entry.getKey();
-                            if (!matchedRelativePaths.contains(path) && !isInWhitelist(path, whitelist)) {
-                                Set<AttachmentReference.ReferenceSource> sources = entry.getValue();
-                                // 每个 URL 创建一条断链记录，包含所有引用源
-                                brokenLinkTasks.add(createBrokenLinkRecord(path, sources, now, scanTimestamp));
-                                brokenLinkCount.incrementAndGet();
-                            }
-                        }
-
-                        log.info("断链检测完成，发现 {} 个断链（已过滤白名单 {} 条）", brokenLinkCount.get(), whitelist.size());
-
-                        // 顺序创建所有断链记录
-                        return Flux.fromIterable(brokenLinkTasks).concatMap(task -> task).then();
+                // 附件遍历完成后，进行断链检测
+                // 使用 BrokenLinkDetector 执行检测
+                return settingsManager.getBrokenLinkSettings()
+                    .flatMap(brokenLinkSettings -> {
+                        return getBrokenLinkWhitelist()
+                            .flatMap(whitelist -> {
+                                return brokenLinkDetector.detect(
+                                    context,
+                                    matchedFullUrls,
+                                    whitelist,
+                                    brokenLinkSettings,
+                                    scanTimestamp
+                                ).doOnNext(brokenLinkCount::set);
+                            });
                     });
             }))
             .then(Mono.defer(() -> {
@@ -1022,52 +946,10 @@ public class ReferenceServiceImpl implements ReferenceService {
             // 更新断链扫描状态（确保完成后再返回）
             .flatMap(updatedStatus ->
                 updateBrokenLinkScanStatus(
-                    fullUrlToSources.size() + relativePathToSources.size(),
+                    fullUrlToSources.size(),
                     brokenLinkCount.get()
                 ).then(Mono.just(updatedStatus))
             );
-    }
-
-    /**
-     * 创建断链记录（每个 URL 一条记录，包含所有引用源）
-     */
-    private Mono<BrokenLink> createBrokenLinkRecord(String url,
-            Set<AttachmentReference.ReferenceSource> sources, Instant discoveredAt, long scanTimestamp) {
-
-        // 使用时间戳和计数器作为名称，与引用记录逻辑一致
-        String linkName = "broken-link-" + scanTimestamp + "-" + System.nanoTime();
-
-        BrokenLink brokenLink = new BrokenLink();
-        brokenLink.setMetadata(new Metadata());
-        brokenLink.getMetadata().setName(linkName);
-
-        BrokenLink.BrokenLinkSpec spec = new BrokenLink.BrokenLinkSpec();
-        spec.setUrl(url);
-        brokenLink.setSpec(spec);
-
-        BrokenLink.BrokenLinkStatus status = new BrokenLink.BrokenLinkStatus();
-        status.setSourceCount(sources.size());
-        status.setDiscoveredAt(discoveredAt);
-
-        // 转换引用源列表
-        List<BrokenLink.BrokenLinkSource> brokenLinkSources = sources.stream()
-            .map(source -> {
-                BrokenLink.BrokenLinkSource blSource = new BrokenLink.BrokenLinkSource();
-                blSource.setSourceType(source.getSourceType());
-                blSource.setSourceName(source.getSourceName());
-                blSource.setSourceTitle(source.getSourceTitle());
-                blSource.setSourceUrl(source.getSourceUrl());
-                blSource.setDeleted(source.getDeleted());
-                blSource.setReferenceType(source.getReferenceType());
-                blSource.setSettingName(source.getSettingName());
-                return blSource;
-            })
-            .toList();
-
-        status.setSources(brokenLinkSources);
-        brokenLink.setStatus(status);
-
-        return client.create(brokenLink);
     }
 
     /**
@@ -1094,6 +976,22 @@ public class ReferenceServiceImpl implements ReferenceService {
                 return client.update(status);
             })
             .then();
+    }
+
+    /**
+     * 判断附件是否在排除分组或排除策略中
+     */
+    private boolean isExcludedAttachment(Attachment attachment,
+                                         SettingsManager.ExcludeSettings excludeSettings) {
+        String groupName = attachment.getSpec().getGroupName();
+        if (groupName != null && excludeSettings.excludeGroups().contains(groupName)) {
+            return true;
+        }
+        String policyName = attachment.getSpec().getPolicyName();
+        if (policyName != null && excludeSettings.excludePolicies().contains(policyName)) {
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1138,33 +1036,7 @@ public class ReferenceServiceImpl implements ReferenceService {
     private Mono<List<WhitelistService.WhitelistItem>> getBrokenLinkWhitelist() {
         return whitelistService.list()
             .collectList()
-            .doOnSuccess(whitelist -> log.info("断链白名单读取完成: {} 条", whitelist.size()));
-    }
-
-    /**
-     * 检查 URL 是否在白名单中
-     * 根据白名单条目的 matchMode 决定使用精确匹配还是前缀匹配
-     */
-    private boolean isInWhitelist(String url, List<WhitelistService.WhitelistItem> whitelist) {
-        if (!StringUtils.hasText(url) || whitelist == null || whitelist.isEmpty()) {
-            return false;
-        }
-        for (WhitelistService.WhitelistItem item : whitelist) {
-            String pattern = item.url();
-            String matchMode = item.matchMode();
-
-            // 精确匹配
-            if ("exact".equals(matchMode)) {
-                if (url.equals(pattern)) {
-                    return true;
-                }
-            }
-            // 前缀匹配（prefix 或默认）
-            else if (url.startsWith(pattern)) {
-                return true;
-            }
-        }
-        return false;
+            .doOnSuccess(whitelist -> log.debug("断链白名单读取完成: {} 条", whitelist.size()));
     }
 
     @Override
@@ -1313,9 +1185,137 @@ public class ReferenceServiceImpl implements ReferenceService {
             .flatMap(ref -> getReference(attachmentName));
     }
 
-    // DocTree GVK (doc.halo.run/v1alpha1/DocTree)
-    private static final GroupVersionKind DOC_TREE_GVK = 
-        new GroupVersionKind("doc.halo.run", "v1alpha1", "DocTree");
+    @Override
+    public Mono<String> resolveSourceTitle(String sourceType, String sourceTitle,
+                                            String settingName, String groupKey) {
+        if (!StringUtils.hasText(sourceTitle)) {
+            return Mono.just(sourceTitle != null ? sourceTitle : "");
+        }
+
+        // ConfigMap 类型（ThemeSetting/PluginSetting/SystemSetting）: 解析为 "displayName - groupLabel" 格式
+        if (isConfigMapType(sourceType) && StringUtils.hasText(settingName) && StringUtils.hasText(groupKey)) {
+            return getSettingGroupLabel(settingName, groupKey)
+                .map(groupLabel -> {
+                    // 从原标题中提取 displayName（去掉 " 主题设置"、" 插件设置"、"系统设置" 后缀）
+                    String displayName = extractDisplayName(sourceTitle, sourceType);
+                    return displayName + " - " + groupLabel;
+                })
+                .defaultIfEmpty(sourceTitle);
+        }
+
+        // Comment 类型: sourceTitle 格式是 "Kind:name"（如 "Post:uuid"），需要解析关联内容的标题
+        if ("Comment".equals(sourceType)) {
+            int colonIndex = sourceTitle.indexOf(':');
+            if (colonIndex > 0) {
+                String kind = sourceTitle.substring(0, colonIndex);
+                String name = sourceTitle.substring(colonIndex + 1);
+                return resolveSubjectTitle(kind, name)
+                    .map(title -> title + " - 评论")
+                    .defaultIfEmpty(sourceTitle + " - 评论");
+            }
+            return Mono.just(sourceTitle + " - 评论");
+        }
+
+        // Reply 类型: sourceTitle 格式是 "Comment:name"，需要解析关联评论的内容标题
+        if ("Reply".equals(sourceType) && sourceTitle.startsWith("Comment:")) {
+            String commentName = sourceTitle.substring("Comment:".length());
+            return client.fetch(Comment.class, commentName)
+                .flatMap(comment -> {
+                    var subjectRef = comment.getSpec().getSubjectRef();
+                    if (subjectRef == null) {
+                        return Mono.just(sourceTitle + " - 回复");
+                    }
+                    return resolveSubjectTitle(subjectRef.getKind(), subjectRef.getName())
+                        .map(title -> title + " - 回复");
+                })
+                .defaultIfEmpty(sourceTitle + " - 回复");
+        }
+
+        // Doc 类型: sourceTitle 格式是 "Doc:name"，需要解析文档标题
+        if ("Doc".equals(sourceType) && sourceTitle.startsWith("Doc:")) {
+            String docName = sourceTitle.substring("Doc:".length());
+            String refTypeLabel = translateReferenceType(groupKey);
+            return resolveDocInfo(docName)
+                .map(info -> StringUtils.hasText(refTypeLabel)
+                    ? info.title() + " - " + refTypeLabel
+                    : info.title())
+                .defaultIfEmpty(StringUtils.hasText(refTypeLabel)
+                    ? sourceTitle + " - " + refTypeLabel
+                    : sourceTitle);
+        }
+
+        // 其他类型：添加引用类型后缀
+        if (StringUtils.hasText(groupKey)) {
+            String refTypeLabel = translateReferenceType(groupKey);
+            return Mono.just(sourceTitle + " - " + refTypeLabel);
+        }
+
+        // 其他类型直接返回原值
+        return Mono.just(sourceTitle);
+    }
+
+    /**
+     * 翻译引用类型为中文
+     */
+    private String translateReferenceType(String referenceType) {
+        if (!StringUtils.hasText(referenceType)) {
+            return "";
+        }
+        return switch (referenceType) {
+            case "cover" -> "封面";
+            case "content" -> "内容";
+            case "draft" -> "草稿";
+            case "comment" -> "评论";
+            case "reply" -> "回复";
+            case "media" -> "媒体";
+            case "avatar" -> "头像";
+            case "icon" -> "图标";
+            default -> referenceType;
+        };
+    }
+
+    /**
+     * 判断是否为 ConfigMap 类型
+     */
+    private boolean isConfigMapType(String sourceType) {
+        return "ThemeSetting".equals(sourceType)
+            || "PluginSetting".equals(sourceType)
+            || "SystemSetting".equals(sourceType);
+    }
+
+    /**
+     * 从原标题中提取 displayName
+     * 原标题格式：
+     * - ThemeSetting: "displayName 主题设置"
+     * - PluginSetting: "displayName 插件设置"
+     * - SystemSetting: "系统设置"
+     */
+    private String extractDisplayName(String sourceTitle, String sourceType) {
+        if ("SystemSetting".equals(sourceType)) {
+            return "系统设置";
+        }
+        String suffix = "ThemeSetting".equals(sourceType) ? " 主题设置" : " 插件设置";
+        if (sourceTitle.endsWith(suffix)) {
+            return sourceTitle.substring(0, sourceTitle.length() - suffix.length());
+        }
+        return sourceTitle;
+    }
+
+    /**
+     * 解析关联内容的标题
+     */
+    private Mono<String> resolveSubjectTitle(String kind, String name) {
+        return switch (kind) {
+            case "Post" -> client.fetch(Post.class, name)
+                .map(post -> post.getSpec().getTitle());
+            case "SinglePage" -> client.fetch(SinglePage.class, name)
+                .map(page -> page.getSpec().getTitle());
+            case "Moment" -> Mono.just("瞬间");
+            case "DocTree" -> resolveDocTreeInfo(name)
+                .map(SubjectInfo::title);
+            default -> Mono.empty();
+        };
+    }
 
     @Override
     public Mono<SubjectInfo> resolveDocInfo(String docName) {
@@ -1546,18 +1546,6 @@ public class ReferenceServiceImpl implements ReferenceService {
         list.sort(comparator);
     }
 
-    /**
-     * URL 解码
-     * 处理 %20、%E4%B8%AD 等编码
-     */
-    private String decodeUrl(String url) {
-        try {
-            return java.net.URLDecoder.decode(url, java.nio.charset.StandardCharsets.UTF_8);
-        } catch (IllegalArgumentException e) {
-            return url;
-        }
-    }
-
     @Override
     public Mono<CleanupResult> deleteUnreferenced(List<String> attachmentNames) {
         if (attachmentNames == null || attachmentNames.isEmpty()) {
@@ -1595,58 +1583,19 @@ public class ReferenceServiceImpl implements ReferenceService {
                 long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
 
                 return client.delete(attachment)
-                    .then(createCleanupLog(attachmentName, displayName, fileSize, "UNREFERENCED", null))
+                    .then(cleanupLogService.saveLog(attachmentName, displayName, fileSize, CleanupReason.UNREFERENCED, null))
                     .doOnSuccess(v -> {
                         deletedCount.incrementAndGet();
                         freedSize.addAndGet(fileSize);
-                        log.info("已删除未引用文件: {}", displayName);
-                    });
+                        log.debug("已删除未引用文件: {}", displayName);
+                    })
+                    .then();
             })
             .onErrorResume(e -> {
                 log.error("删除附件 {} 失败: {}", attachmentName, e.getMessage());
                 errors.add(attachmentName + ": " + e.getMessage());
                 return Mono.empty();
             });
-    }
-
-    /**
-     * 创建清理日志
-     */
-    private Mono<Void> createCleanupLog(String attachmentName,
-                                         String displayName,
-                                         long size,
-                                         String reason,
-                                         String errorMessage) {
-        return getCurrentUsername()
-            .flatMap(operator -> {
-                com.timxs.storagetoolkit.extension.CleanupLog cleanupLog = new com.timxs.storagetoolkit.extension.CleanupLog();
-                cleanupLog.setMetadata(new Metadata());
-                cleanupLog.getMetadata().setGenerateName("cleanup-log-");
-
-                com.timxs.storagetoolkit.extension.CleanupLog.CleanupLogSpec spec =
-                    new com.timxs.storagetoolkit.extension.CleanupLog.CleanupLogSpec();
-                spec.setAttachmentName(attachmentName);
-                spec.setDisplayName(displayName);
-                spec.setSize(size);
-                spec.setReason(com.timxs.storagetoolkit.extension.CleanupLog.Reason.valueOf(reason));
-                spec.setOperator(operator);
-                spec.setDeletedAt(Instant.now());
-                spec.setErrorMessage(errorMessage);
-                cleanupLog.setSpec(spec);
-
-                return client.create(cleanupLog).then();
-            });
-    }
-
-    /**
-     * 获取当前登录用户名
-     */
-    private Mono<String> getCurrentUsername() {
-        return ReactiveSecurityContextHolder.getContext()
-            .map(ctx -> ctx.getAuthentication())
-            .filter(auth -> auth != null && auth.isAuthenticated())
-            .map(auth -> auth.getName())
-            .defaultIfEmpty("system");
     }
 
     /**

@@ -19,7 +19,7 @@
           删除选中 ({{ totalSelectedCount }})
         </button>
         <span class="scan-info" v-if="stats.lastScanTime && !scanning">上次扫描：{{ formatTime(stats.lastScanTime) }}</span>
-        <span class="scan-info error" v-else-if="stats.phase === 'error'">扫描失败：{{ stats.errorMessage }}</span>
+        <span class="scan-info error" v-else-if="stats.phase === 'ERROR'">扫描失败：{{ stats.errorMessage }}</span>
         <span class="status-hint info" v-if="stats.enableRemoteStorage === false">🌐 仅扫描本地存储</span>
         <span class="status-hint info" v-else-if="stats.enableRemoteStorage === true">🌐 已启用远程扫描</span>
       </div>
@@ -81,14 +81,13 @@
             class="file-item"
             v-for="file in group.files"
             :key="file.attachmentName"
-            :class="{ recommended: file.isRecommended, selected: isFileSelected(group.md5Hash, file.attachmentName) }"
+            :class="{ recommended: file.recommended, selected: isFileSelected(group.md5Hash, file.attachmentName) }"
           >
             <div class="file-main">
-              <input 
-                type="checkbox" 
+              <input
+                type="checkbox"
                 class="file-checkbox"
                 :checked="isFileSelected(group.md5Hash, file.attachmentName)"
-                :disabled="file.isRecommended"
                 @change="toggleFileSelect(group.md5Hash, file.attachmentName)"
               />
               <img 
@@ -100,7 +99,7 @@
               <span v-else class="file-icon">{{ getFileIcon(file.mediaType) }}</span>
               <span class="file-name" @click="openPreview(file, group.fileSize)">{{ file.displayName }}</span>
               <span class="group-badge">{{ file.groupDisplayName || '未分组' }}</span>
-              <span class="recommended-badge" v-if="file.isRecommended">推荐保留</span>
+              <span class="recommended-badge" v-if="file.recommended">推荐保留</span>
             </div>
             <div class="file-meta">
               <span class="file-refs not-scanned" v-if="file.referenceCount < 0">
@@ -132,7 +131,7 @@
     </div>
 
     <!-- 空状态 -->
-    <div class="empty-state" v-else-if="!scanning && stats.phase === 'completed'">
+    <div class="empty-state" v-else-if="!scanning && stats.phase === 'COMPLETED'">
       <span class="empty-icon">✨</span>
       <span class="empty-text">没有发现重复文件</span>
       <span class="empty-hint">所有文件都是唯一的</span>
@@ -188,19 +187,81 @@
               <span class="info-value info-url">{{ previewFile.permalink }}</span>
             </div>
           </div>
+
+          <!-- 引用列表 -->
+          <ReferenceList :references="previewFile?.references" />
         </div>
       </div>
     </div>
   </div>
+
+  <!-- 删除确认对话框 -->
+  <VModal
+    v-model:visible="showDeleteDialog"
+    :width="480"
+    :closable="true"
+    :mask-closable="true"
+    @close="handleDeleteCancel"
+  >
+    <template #header>确认删除重复附件</template>
+    <template #default>
+      <div class="delete-confirm-content">
+        <!-- 描述内容 -->
+        <div class="confirm-description">
+          确定要永久删除选中的 <strong>{{ totalSelectedCount }}</strong> 个重复附件文件吗？此操作将删除存储中的文件，不可恢复。
+        </div>
+
+        <!-- 测试版提示 -->
+        <div class="confirm-alert confirm-alert-beta">
+          <span class="alert-icon">🧪</span>
+          <span>当前为测试版功能，使用前请备份重要数据</span>
+        </div>
+
+        <!-- 选项区域 -->
+        <div class="confirm-option">
+          <label class="confirm-checkbox-label">
+            <input
+              type="checkbox"
+              v-model="deleteReplaceReferences"
+              class="confirm-checkbox"
+            />
+            <span class="confirm-checkbox-text">
+              <span class="checkbox-main">自动替换引用</span>
+              <span class="checkbox-sub">测试版功能，有风险请谨慎使用</span>
+            </span>
+          </label>
+          <div class="confirm-option-hint">⚠️ 此功能会修改文章/页面/评论/设置中的链接内容</div>
+        </div>
+
+        <!-- 底部提示 -->
+        <div class="confirm-tip">
+          💡 建议先执行「引用扫描」以确保引用正确替换
+        </div>
+      </div>
+    </template>
+    <template #footer>
+      <div class="confirm-footer">
+        <VButton type="danger" @click="handleDeleteConfirm">删除</VButton>
+        <VButton @click="handleDeleteCancel">取消</VButton>
+      </div>
+    </template>
+  </VModal>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { DuplicateStats, DuplicateGroup, DuplicateFile } from '@/types/duplicate'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
+import { formatBytes, formatTime } from '@/utils/format'
+import { getFileIcon, isImage } from '@/composables/useReferenceSource'
+import ReferenceList from '@/components/ReferenceList.vue'
+
+// 删除确认弹窗
+const showDeleteDialog = ref(false)
+const deleteReplaceReferences = ref(true)
 
 const stats = ref<DuplicateStats>({
   phase: null,
@@ -211,7 +272,8 @@ const stats = ref<DuplicateStats>({
   duplicateGroupCount: 0,
   duplicateFileCount: 0,
   savableSize: 0,
-  errorMessage: null
+  errorMessage: null,
+  enableRemoteStorage: false
 })
 
 const duplicateGroups = ref<DuplicateGroup[]>([])
@@ -227,9 +289,12 @@ const showPreview = ref(false)
 const previewFile = ref<DuplicateFile | null>(null)
 const previewFileSize = ref<number>(0)
 
+// 轮询定时器
+const pollTimer = ref<number>()
+
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
-const openPreview = async (file: DuplicateFile, size: number) => {
+const openPreview = (file: DuplicateFile, size: number) => {
   previewFile.value = file
   previewFileSize.value = size
   showPreview.value = true
@@ -252,7 +317,7 @@ const isFileSelected = (md5Hash: string, attachmentName: string): boolean => {
 
 // 检查组内是否全选（排除推荐保留项）
 const isGroupAllSelected = (group: DuplicateGroup): boolean => {
-  const selectableFiles = group.files.filter(f => !f.isRecommended)
+  const selectableFiles = group.files.filter(f => !f.recommended)
   if (selectableFiles.length === 0) return false
   const selected = selectedFiles.value[group.md5Hash] || []
   return selectableFiles.every(f => selected.includes(f.attachmentName))
@@ -280,7 +345,7 @@ const toggleFileSelect = (md5Hash: string, attachmentName: string) => {
 
 // 切换组内全选（排除推荐保留项）
 const toggleGroupSelect = (group: DuplicateGroup) => {
-  const selectableFiles = group.files.filter(f => !f.isRecommended)
+  const selectableFiles = group.files.filter(f => !f.recommended)
   if (isGroupAllSelected(group)) {
     selectedFiles.value[group.md5Hash] = []
   } else {
@@ -291,43 +356,69 @@ const toggleGroupSelect = (group: DuplicateGroup) => {
 // 删除选中的文件
 const deleteSelected = () => {
   if (totalSelectedCount.value === 0) return
+  showDeleteDialog.value = true
+}
 
-  Dialog.warning({
-    title: '确认删除附件',
-    description: `确定要永久删除选中的 ${totalSelectedCount.value} 个重复附件文件吗？此操作将删除存储中的文件，不可恢复。`,
-    confirmType: 'danger',
-    confirmText: '删除',
-    cancelText: '取消',
-    async onConfirm() {
-      try {
-        const toDeleteMap = { ...selectedFiles.value }
-        // 按组删除，调用 cleanup 端点
-        for (const [md5Hash, attachmentNames] of Object.entries(toDeleteMap)) {
-          if (attachmentNames.length === 0) continue
-          await axiosInstance.delete(API_ENDPOINTS.CLEANUP_DUPLICATES(md5Hash), {
-            data: { attachmentNames }
-          })
-        }
-        Toast.success('删除成功')
-        // 从前端列表中移除已删除项，不请求后端
-        for (const [md5Hash, attachmentNames] of Object.entries(toDeleteMap)) {
-          const group = duplicateGroups.value.find(g => g.md5Hash === md5Hash)
-          if (group) {
-            group.files = group.files.filter(f => !attachmentNames.includes(f.attachmentName))
-            group.fileCount = group.files.length
-            // 如果组内只剩一个文件，移除整个组
-            if (group.files.length <= 1) {
-              duplicateGroups.value = duplicateGroups.value.filter(g => g.md5Hash !== md5Hash)
-              total.value = Math.max(0, total.value - 1)
-            }
+// 确认删除
+const handleDeleteConfirm = async () => {
+  showDeleteDialog.value = false
+
+  const toDeleteMap = { ...selectedFiles.value }
+  let totalDeleted = 0
+  let totalFailed = 0
+
+  // 按组删除，每组独立处理
+  for (const [md5Hash, attachmentNames] of Object.entries(toDeleteMap)) {
+    if (attachmentNames.length === 0) continue
+    try {
+      const { data } = await axiosInstance.delete(API_ENDPOINTS.CLEANUP_DUPLICATES(md5Hash), {
+        data: { attachmentNames, replaceReferences: deleteReplaceReferences.value }
+      })
+
+      totalDeleted += data.deletedCount || 0
+      totalFailed += data.failedCount || 0
+
+      // 根据后端返回的 errors 解析失败的附件名
+      const failedNames = new Set(
+        (data.errors || []).map((e: string) => {
+          const idx = e.indexOf(': ')
+          return idx > 0 ? e.substring(0, idx) : e
+        })
+      )
+      // 只从 UI 移除实际删除成功的文件
+      const deleted = attachmentNames.filter((n: string) => !failedNames.has(n))
+      if (deleted.length > 0) {
+        const group = duplicateGroups.value.find(g => g.md5Hash === md5Hash)
+        if (group) {
+          group.files = group.files.filter(f => !deleted.includes(f.attachmentName))
+          group.fileCount = group.files.length
+          if (group.files.length <= 1) {
+            duplicateGroups.value = duplicateGroups.value.filter(g => g.md5Hash !== md5Hash)
+            total.value = Math.max(0, total.value - 1)
           }
         }
-        selectedFiles.value = {}
-      } catch (error: any) {
-        Toast.error('删除失败: ' + (error.response?.data?.message || error.message))
       }
+    } catch (error: any) {
+      // HTTP 级别错误，整组视为失败
+      totalFailed += attachmentNames.length
     }
-  })
+  }
+
+  // 汇总提示
+  if (totalFailed === 0) {
+    Toast.success(`删除成功，共 ${totalDeleted} 个文件`)
+  } else if (totalDeleted > 0) {
+    Toast.warning(`部分删除成功：${totalDeleted} 个成功，${totalFailed} 个失败`)
+  } else {
+    Toast.error('删除失败')
+  }
+
+  selectedFiles.value = {}
+}
+
+// 取消删除
+const handleDeleteCancel = () => {
+  showDeleteDialog.value = false
 }
 
 // 获取统计数据
@@ -335,7 +426,7 @@ const fetchStats = async () => {
   try {
     const { data } = await axiosInstance.get<DuplicateStats>(API_ENDPOINTS.DUPLICATES_STATS)
     stats.value = data
-    scanning.value = data.phase === 'scanning'
+    scanning.value = data.phase === 'SCANNING'
   } catch (error) {
     console.error('获取统计数据失败', error)
   }
@@ -389,7 +480,8 @@ const clearRecords = () => {
           duplicateGroupCount: 0,
           duplicateFileCount: 0,
           savableSize: 0,
-          errorMessage: null
+          errorMessage: null,
+          enableRemoteStorage: false
         }
         duplicateGroups.value = []
         total.value = 0
@@ -404,12 +496,17 @@ const clearRecords = () => {
 // 轮询扫描状态
 const pollScanStatus = () => {
   const poll = async () => {
-    await fetchStats()
-    if (stats.value.phase === 'scanning') {
-      setTimeout(poll, 1000)
-    } else {
+    try {
+      await fetchStats()
+      if (stats.value.phase === 'SCANNING') {
+        pollTimer.value = window.setTimeout(poll, 1000)
+      } else {
+        scanning.value = false
+        fetchDuplicateGroups()
+      }
+    } catch (error) {
+      console.error('轮询扫描状态失败:', error)
       scanning.value = false
-      fetchDuplicateGroups()
     }
   }
   poll()
@@ -427,40 +524,19 @@ const onPageSizeChange = () => {
   fetchDuplicateGroups()
 }
 
-const formatBytes = (bytes: number): string => {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0, size = bytes
-  while (size >= 1024 && i < 3) { size /= 1024; i++ }
-  return `${size.toFixed(1)} ${units[i]}`
-}
-
-const formatTime = (time: string | null): string => {
-  if (!time) return ''
-  return new Date(time).toLocaleString('zh-CN')
-}
-
-const getFileIcon = (mediaType: string | null): string => {
-  if (!mediaType) return '📄'
-  if (mediaType.startsWith('image/')) return '🖼️'
-  if (mediaType.startsWith('video/')) return '🎬'
-  if (mediaType.startsWith('audio/')) return '🎵'
-  if (mediaType.includes('pdf')) return '📕'
-  if (mediaType.includes('zip') || mediaType.includes('rar')) return '📦'
-  return '📄'
-}
-
-const isImage = (mediaType: string | null): boolean => {
-  return mediaType?.startsWith('image/') ?? false
-}
-
 onMounted(async () => {
   await fetchStats()
-  if (stats.value.phase === 'scanning') {
+  if (stats.value.phase === 'SCANNING') {
     scanning.value = true
     pollScanStatus()
   } else if (stats.value.lastScanTime) {
     await fetchDuplicateGroups()
+  }
+})
+
+onUnmounted(() => {
+  if (pollTimer.value) {
+    clearTimeout(pollTimer.value)
   }
 })
 </script>
@@ -1010,5 +1086,109 @@ onMounted(async () => {
 
 .file-name:hover {
   color: #2563eb;
+}
+
+/* 删除确认对话框样式 */
+.delete-confirm-content {
+  padding: 4px 0;
+}
+
+.confirm-description {
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.confirm-description strong {
+  font-weight: 600;
+}
+
+.confirm-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.confirm-alert-beta {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.alert-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.confirm-option {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.confirm-checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.confirm-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  margin-top: 1px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+}
+
+.confirm-checkbox-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.checkbox-main {
+  font-size: 14px;
+  font-weight: 500;
+  color: #d97706;
+}
+
+.checkbox-sub {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.confirm-option-hint {
+  margin-top: 8px;
+  padding-left: 24px;
+  font-size: 12px;
+  color: #b45309;
+}
+
+.confirm-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.confirm-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  width: 100%;
 }
 </style>

@@ -21,11 +21,7 @@
 
       <main class="toolkit-main">
         <StatisticsPanel v-if="currentTab === 'statistics'" />
-        <AnalysisPanel 
-          v-else-if="currentTab === 'analysis'" 
-          :current-sub-tab="currentSubTab"
-          @update:sub-tab="switchSubTab"
-        />
+        <AnalysisPanel v-else-if="currentTab === 'analysis'" />
         <BatchProcessingPanel v-else-if="currentTab === 'batch'" />
         <ProcessingLogsPanel v-else-if="currentTab === 'logs'" />
       </main>
@@ -53,10 +49,8 @@ const tabs = [
 ]
 
 const STORAGE_KEY = 'storage-toolkit-tab'
-const SUB_TAB_KEY = 'storage-toolkit-sub-tab'
 
 const currentTab = ref('statistics')
-const currentSubTab = ref('reference')
 
 const switchTab = (tabId: string) => {
   currentTab.value = tabId
@@ -65,11 +59,6 @@ const switchTab = (tabId: string) => {
   router.replace({
     query: { ...route.query, tab: tabId }
   })
-}
-
-const switchSubTab = (subTabId: string) => {
-  currentSubTab.value = subTabId
-  localStorage.setItem(SUB_TAB_KEY, subTabId)
 }
 
 onMounted(() => {
@@ -86,14 +75,12 @@ onMounted(() => {
   } else {
     // 否则使用 localStorage
     const savedTab = localStorage.getItem(STORAGE_KEY)
-    const savedSubTab = localStorage.getItem(SUB_TAB_KEY)
     if (savedTab && tabs.some(t => t.id === savedTab)) {
       currentTab.value = savedTab
     } else if (savedTab === 'overview') {
       currentTab.value = 'statistics'
       localStorage.setItem(STORAGE_KEY, 'statistics')
     }
-    if (savedSubTab) currentSubTab.value = savedSubTab
   }
 })
 
