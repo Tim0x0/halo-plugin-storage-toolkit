@@ -21,7 +21,7 @@ dependencies {
     // WebP 读写支持（BSD 许可证）
     implementation 'org.sejda.imageio:webp-imageio:0.1.6'
     // AVIF 读写支持
-    implementation 'com.github.Tim0x0:avif-imageio:0.1.0'
+    implementation 'com.github.Tim0x0:avif-imageio:0.1.2'
 
     testImplementation 'run.halo.app:api'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

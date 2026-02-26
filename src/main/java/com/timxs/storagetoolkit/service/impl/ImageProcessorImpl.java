@@ -6,6 +6,7 @@ import com.timxs.storagetoolkit.config.ImageWatermarkConfig;
 import com.timxs.storagetoolkit.config.ProcessingConfig;
 import com.timxs.storagetoolkit.config.TextWatermarkConfig;
 import com.timxs.storagetoolkit.config.WatermarkConfig;
+import com.timxs.storagetoolkit.model.ImageFormat;
 import com.timxs.storagetoolkit.model.ProcessingResult;
 import com.timxs.storagetoolkit.model.WatermarkType;
 import com.timxs.storagetoolkit.service.FormatConverter;
@@ -253,7 +254,7 @@ public class ImageProcessorImpl implements ImageProcessor {
                 try {
                     var formatConfig = config.getFormatConversion();
                     // 根据目标格式选择对应的 effort 值
-                    int effort = formatConfig.getTargetFormat() == com.timxs.storagetoolkit.model.ImageFormat.AVIF 
+                    int effort = formatConfig.getTargetFormat() == ImageFormat.AVIF
                         ? formatConfig.getAvifEffort() 
                         : formatConfig.getWebpEffort();
                     byte[] convertedData = formatConverter.convert(image, formatConfig.getTargetFormat(), 
@@ -263,24 +264,18 @@ public class ImageProcessorImpl implements ImageProcessor {
                     double increaseRatio = (double)(convertedData.length - imageData.length) / imageData.length * 100;
                     int threshold = formatConfig.getSkipThreshold();
                     
-                    // 智能跳过逻辑：比较转换后体积与原始上传体积，考虑容错比例
-                    if (formatConfig.isSkipIfLarger() && increaseRatio > threshold) {
-                        // 转换后体积增加超过阈值，保留原格式
-                        log.debug("智能跳过格式转换: {} 体积 ({}) > 原始体积 ({})，增加 {}% 超过阈值 {}%", 
+                    // 智能跳过逻辑：仅在无水印时生效（有水印时原始文件已不可用，跳过无意义）
+                    if (formatConfig.isSkipIfLarger() && increaseRatio > threshold && !watermarkApplied) {
+                        // 无水印 + 转换后体积增加超过阈值 → 直接返回原始数据
+                        log.debug("智能跳过格式转换: {} 体积 ({}) > 原始体积 ({})，增加 {}% 超过阈值 {}%",
                             formatConfig.getTargetFormat(),
-                            formatFileSize(convertedData.length), 
+                            formatFileSize(convertedData.length),
                             formatFileSize(imageData.length),
                             String.format("%.1f", increaseRatio),
                             threshold);
-                        
-                        // 如果有水印，需要重新编码为原格式；否则直接使用原始数据避免二次压缩损失
-                        if (watermarkApplied) {
-                            resultData = imageToBytes(image, contentType);
-                        } else {
-                            resultData = imageData;
-                        }
-                        // 保持原文件名和 contentType（不修改 currentFilename 和 currentContentType）
-                        
+
+                        resultData = imageData;
+
                         // 标记格式转换被跳过
                         formatConversionSkipped = true;
                         skipReason = String.format("格式转换跳过: %s 体积 (%s) > 原始体积 (%s)，增加 %.1f%% 超过阈值 %d%%",
@@ -292,29 +287,43 @@ public class ImageProcessorImpl implements ImageProcessor {
                     } else {
                         // 使用转换后的数据
                         resultData = convertedData;
-                        currentFilename = formatConverter.updateFilenameExtension(currentFilename, 
+                        currentFilename = formatConverter.updateFilenameExtension(currentFilename,
                             formatConfig.getTargetFormat());
                         currentContentType = formatConverter.getMimeType(formatConfig.getTargetFormat());
                         processed = true;
-                        
+
+                        // 有水印且体积超阈值：记录说明（因水印已修改图片，无法回退到原始文件）
+                        if (watermarkApplied && formatConfig.isSkipIfLarger() && increaseRatio > threshold) {
+                            String note = String.format("因水印已修改图片，格式转换未跳过（体积较原始增加 %.1f%%）", increaseRatio);
+                            errorMessages.append(note).append("; ");
+                            log.debug(note);
+                        }
+
                         // 记录压缩效果
                         if (convertedData.length <= imageData.length) {
                             if (convertedData.length < imageData.length) {
                                 double reduction = (1.0 - (double)convertedData.length / imageData.length) * 100;
-                                log.debug("格式转换成功: {} -> {}, 体积减少 {}%", 
+                                log.debug("格式转换成功: {} -> {}, 体积减少 {}%",
                                     originalFilename, currentFilename, String.format("%.1f", reduction));
                             } else {
                                 // 体积相等
-                                log.debug("格式转换成功: {} -> {}, 体积不变", 
+                                log.debug("格式转换成功: {} -> {}, 体积不变",
                                     originalFilename, currentFilename);
                             }
                         } else if (increaseRatio > 0) {
-                            // 体积增加但在阈值内，记录 DEBUG 日志
-                            log.debug("格式转换成功: {} -> {}, 体积增加 {}% (在阈值 {}% 内)", 
-                                originalFilename, currentFilename, 
-                                String.format("%.1f", increaseRatio), threshold);
+                            // 体积增加，记录 DEBUG 日志
+                            if (increaseRatio <= threshold) {
+                                log.debug("格式转换成功: {} -> {}, 体积增加 {}% (在阈值 {}% 内)",
+                                    originalFilename, currentFilename,
+                                    String.format("%.1f", increaseRatio), threshold);
+                            } else if (watermarkApplied) {
+                                log.debug("格式转换成功: {} -> {}, 体积增加 {}% (超过阈值 {}%，因水印已修改未跳过)",
+                                    originalFilename, currentFilename,
+                                    String.format("%.1f", increaseRatio), threshold);
+                            }
+                            // skipIfLarger=false 的情况由下方 warn 日志处理
                         }
-                        
+
                         // 强制转换模式下体积增加的警告
                         if (!formatConfig.isSkipIfLarger() && increaseRatio > 0) {
                             log.warn("格式转换完成，但体积增加: {} → {} (+{}%)",
@@ -345,20 +354,15 @@ public class ImageProcessorImpl implements ImageProcessor {
                 return ProcessingResult.skipped(imageData, originalFilename, contentType, "没有执行任何处理");
             }
             
-            // 智能跳过 + 无水印处理 + 有错误 → FAILED（水印失败+转换跳过的情况）
-            if (formatConversionSkipped && !watermarkApplied && errorMessages.length() > 0) {
-                return ProcessingResult.failed(imageData, originalFilename, contentType, 
+            // 智能跳过 + 有错误 → FAILED（水印失败+转换跳过的情况）
+            if (formatConversionSkipped && errorMessages.length() > 0) {
+                return ProcessingResult.failed(imageData, originalFilename, contentType,
                     errorMessages.toString());
             }
-            
-            // 智能跳过 + 无其他处理 → SKIPPED，直接返回原始数据（避免重新编码）
-            if (formatConversionSkipped && !watermarkApplied) {
+
+            // 智能跳过（仅无水印时触发）→ SKIPPED，直接返回原始数据
+            if (formatConversionSkipped) {
                 return ProcessingResult.skipped(imageData, originalFilename, contentType, skipReason);
-            }
-            
-            // 智能跳过 + 有水印 → PARTIAL，返回水印后的原格式数据
-            if (formatConversionSkipped && watermarkApplied) {
-                return ProcessingResult.partial(resultData, currentFilename, currentContentType, skipReason);
             }
 
             // 有错误信息则返回 PARTIAL 状态
@@ -559,6 +563,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             case "image/png" -> "png";
             case "image/gif" -> "gif";
             case "image/webp" -> "webp";
+            case "image/avif" -> "avif";
             case "image/bmp" -> "bmp";
             default -> "png";
         };

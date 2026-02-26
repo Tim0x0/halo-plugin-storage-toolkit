@@ -29,7 +29,7 @@ public class FormatConverterImpl implements FormatConverter {
 
     /**
      * 支持的目标格式集合
-     * 目前仅支持 WebP 格式
+     * 目前支持 WebP 和 AVIF 格式
      */
     private static final Set<ImageFormat> SUPPORTED_FORMATS = Set.of(
         ImageFormat.WEBP,
@@ -65,8 +65,8 @@ public class FormatConverterImpl implements FormatConverter {
         log.debug("开始格式转换，输入图片尺寸: {}x{}, 类型: {}, 目标格式: {}, 质量: {}, 压缩等级: {}", 
             image.getWidth(), image.getHeight(), image.getType(), targetFormat, quality, effort);
 
-        // 统一转换为 RGB 格式（去除 Alpha 通道），这是最主流的做法
-        BufferedImage rgbImage = convertToRGB(image);
+        // 规范化图片类型，保留 Alpha 通道（WebP 和 AVIF 均支持透明）
+        BufferedImage normalizedImage = normalizeImage(image);
 
         // 保存当前线程的类加载器，用于后续恢复
         ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
@@ -81,10 +81,18 @@ public class FormatConverterImpl implements FormatConverter {
             // 诊断：检查 WebP writer 是否可用
             Iterator<ImageWriter> webpWriters = ImageIO.getImageWritersByFormatName("webp");
             if (webpWriters.hasNext()) {
-                ImageWriter webpWriter = webpWriters.next();
-                log.debug("WebP ImageWriter 可用: {}", webpWriter.getClass().getName());
+                log.debug("WebP ImageWriter 可用: {}", webpWriters.next().getClass().getName());
             } else {
                 log.warn("WebP ImageWriter 不可用！检查 native 库是否加载成功，系统架构: {} {}",
+                    System.getProperty("os.name"), System.getProperty("os.arch"));
+            }
+
+            // 诊断：检查 AVIF writer 是否可用
+            Iterator<ImageWriter> avifWriters = ImageIO.getImageWritersByFormatName("avif");
+            if (avifWriters.hasNext()) {
+                log.debug("AVIF ImageWriter 可用: {}", avifWriters.next().getClass().getName());
+            } else {
+                log.warn("AVIF ImageWriter 不可用！检查 native 库是否加载成功，系统架构: {} {}",
                     System.getProperty("os.name"), System.getProperty("os.arch"));
             }
 
@@ -118,7 +126,7 @@ public class FormatConverterImpl implements FormatConverter {
                 setEffortParam(param, targetFormat, effort);
                 
                 // 执行写入
-                writer.write(null, new IIOImage(rgbImage, null, null), param);
+                writer.write(null, new IIOImage(normalizedImage, null, null), param);
             } finally {
                 writer.dispose();
             }
@@ -136,30 +144,32 @@ public class FormatConverterImpl implements FormatConverter {
     }
 
     /**
-     * 将任意类型的 BufferedImage 转换为 TYPE_INT_RGB
-     * 这是处理带 Alpha 通道图片的标准做法，WebP 等格式需要 RGB 输入
+     * 规范化图片类型，保留 Alpha 通道
+     * 有 Alpha 通道的图片转为 TYPE_INT_ARGB，无 Alpha 的转为 TYPE_INT_RGB
      *
      * @param src 源图片
-     * @return RGB 格式的图片
+     * @return 规范化后的图片
      */
-    private BufferedImage convertToRGB(BufferedImage src) {
-        // 如果已经是 RGB 格式，直接返回
-        if (src.getType() == BufferedImage.TYPE_INT_RGB) {
-            log.debug("图片已经是 RGB 格式，无需转换");
+    private BufferedImage normalizeImage(BufferedImage src) {
+        boolean hasAlpha = src.getColorModel().hasAlpha();
+        int targetType = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+
+        if (src.getType() == targetType) {
+            log.debug("图片已经是{}格式，无需转换", hasAlpha ? "ARGB" : "RGB");
             return src;
         }
-        
-        log.debug("将图片从类型 {} 转换为 RGB", src.getType());
-        // 创建新的 RGB 图片
-        BufferedImage rgb = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = rgb.createGraphics();
-        // 白色背景填充透明区域
-        g.setColor(Color.WHITE);
-        g.fillRect(0, 0, src.getWidth(), src.getHeight());
-        // 直接绘制源图像，Java 2D 会自动处理 Alpha 合成
+
+        log.debug("将图片从类型 {} 转换为 {}", src.getType(), hasAlpha ? "ARGB" : "RGB");
+        BufferedImage dest = new BufferedImage(src.getWidth(), src.getHeight(), targetType);
+        Graphics2D g = dest.createGraphics();
+        if (!hasAlpha) {
+            // 无 Alpha 通道时用白色填充背景
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, src.getWidth(), src.getHeight());
+        }
         g.drawImage(src, 0, 0, null);
         g.dispose();
-        return rgb;
+        return dest;
     }
 
     /**
