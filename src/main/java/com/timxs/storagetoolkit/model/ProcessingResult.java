@@ -24,6 +24,13 @@ public record ProcessingResult(
     }
 
     /**
+     * 创建成功结果（附带说明信息）
+     */
+    public static ProcessingResult success(byte[] data, String filename, String contentType, String message) {
+        return new ProcessingResult(data, filename, contentType, ProcessingStatus.SUCCESS, message);
+    }
+
+    /**
      * 创建部分成功结果
      */
     public static ProcessingResult partial(byte[] data, String filename, String contentType, String message) {

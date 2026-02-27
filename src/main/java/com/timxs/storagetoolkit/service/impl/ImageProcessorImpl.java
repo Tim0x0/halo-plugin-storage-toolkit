@@ -233,6 +233,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             boolean formatConversionSkipped = false;
             String skipReason = null;
             boolean watermarkApplied = false;
+            String successNote = null;
 
             // 步骤1：添加水印
             WatermarkConfig watermarkConfig = config.getWatermark();
@@ -285,43 +286,57 @@ public class ImageProcessorImpl implements ImageProcessor {
                             increaseRatio,
                             threshold);
                     } else {
-                        // 使用转换后的数据
-                        resultData = convertedData;
-                        currentFilename = formatConverter.updateFilenameExtension(currentFilename,
-                            formatConfig.getTargetFormat());
-                        currentContentType = formatConverter.getMimeType(formatConfig.getTargetFormat());
                         processed = true;
 
-                        // 有水印且体积超阈值：记录说明（因水印已修改图片，无法回退到原始文件）
+                        // 有水印且智能跳过已启用且体积超阈值：额外编码回原格式，比较选小的
                         if (watermarkApplied && formatConfig.isSkipIfLarger() && increaseRatio > threshold) {
-                            String note = String.format("因水印已修改图片，格式转换未跳过（体积较原始增加 %.1f%%）", increaseRatio);
-                            errorMessages.append(note).append("; ");
-                            log.debug(note);
-                        }
+                            byte[] watermarkedOriginal = imageToBytes(image, contentType);
 
-                        // 记录压缩效果
-                        if (convertedData.length <= imageData.length) {
-                            if (convertedData.length < imageData.length) {
-                                double reduction = (1.0 - (double)convertedData.length / imageData.length) * 100;
-                                log.debug("格式转换成功: {} -> {}, 体积减少 {}%",
-                                    originalFilename, currentFilename, String.format("%.1f", reduction));
+                            if (watermarkedOriginal.length <= convertedData.length) {
+                                // 带水印原格式更小或相等 → 回退为原格式（水印已保留）
+                                resultData = watermarkedOriginal;
+                                String note = "格式转换体积增大，已回退为原格式（水印已保留）";
+                                errorMessages.append(note).append("; ");
+                                log.debug("智能回退: 带水印原格式 ({}) <= 目标格式 ({})，回退为原格式",
+                                    formatFileSize(watermarkedOriginal.length),
+                                    formatFileSize(convertedData.length));
                             } else {
-                                // 体积相等
-                                log.debug("格式转换成功: {} -> {}, 体积不变",
-                                    originalFilename, currentFilename);
+                                // 目标格式仍更小 → 使用目标格式
+                                resultData = convertedData;
+                                currentFilename = formatConverter.updateFilenameExtension(currentFilename,
+                                    formatConfig.getTargetFormat());
+                                currentContentType = formatConverter.getMimeType(formatConfig.getTargetFormat());
+                                double reductionVsWatermarked = (double)(watermarkedOriginal.length - convertedData.length) / watermarkedOriginal.length * 100;
+                                successNote = String.format("体积较原图增大 %.1f%%，但较带水印原格式减小 %.1f%%",
+                                    increaseRatio, reductionVsWatermarked);
+                                log.debug("格式转换成功: 目标格式 ({}) < 带水印原格式 ({})，保留目标格式",
+                                    formatFileSize(convertedData.length),
+                                    formatFileSize(watermarkedOriginal.length));
                             }
-                        } else if (increaseRatio > 0) {
-                            // 体积增加，记录 DEBUG 日志
-                            if (increaseRatio <= threshold) {
-                                log.debug("格式转换成功: {} -> {}, 体积增加 {}% (在阈值 {}% 内)",
-                                    originalFilename, currentFilename,
-                                    String.format("%.1f", increaseRatio), threshold);
-                            } else if (watermarkApplied) {
-                                log.debug("格式转换成功: {} -> {}, 体积增加 {}% (超过阈值 {}%，因水印已修改未跳过)",
-                                    originalFilename, currentFilename,
-                                    String.format("%.1f", increaseRatio), threshold);
+                        } else {
+                            // 正常情况：使用转换后的数据
+                            resultData = convertedData;
+                            currentFilename = formatConverter.updateFilenameExtension(currentFilename,
+                                formatConfig.getTargetFormat());
+                            currentContentType = formatConverter.getMimeType(formatConfig.getTargetFormat());
+
+                            // 记录压缩效果
+                            if (convertedData.length <= imageData.length) {
+                                if (convertedData.length < imageData.length) {
+                                    double reduction = (1.0 - (double)convertedData.length / imageData.length) * 100;
+                                    log.debug("格式转换成功: {} -> {}, 体积减少 {}%",
+                                        originalFilename, currentFilename, String.format("%.1f", reduction));
+                                } else {
+                                    log.debug("格式转换成功: {} -> {}, 体积不变",
+                                        originalFilename, currentFilename);
+                                }
+                            } else if (increaseRatio > 0) {
+                                if (increaseRatio <= threshold) {
+                                    log.debug("格式转换成功: {} -> {}, 体积增加 {}% (在阈值 {}% 内)",
+                                        originalFilename, currentFilename,
+                                        String.format("%.1f", increaseRatio), threshold);
+                                }
                             }
-                            // skipIfLarger=false 的情况由下方 warn 日志处理
                         }
 
                         // 强制转换模式下体积增加的警告
@@ -367,8 +382,11 @@ public class ImageProcessorImpl implements ImageProcessor {
 
             // 有错误信息则返回 PARTIAL 状态
             if (errorMessages.length() > 0) {
-                return ProcessingResult.partial(resultData, currentFilename, currentContentType, 
+                return ProcessingResult.partial(resultData, currentFilename, currentContentType,
                     errorMessages.toString());
+            }
+            if (successNote != null) {
+                return ProcessingResult.success(resultData, currentFilename, currentContentType, successNote);
             }
             return ProcessingResult.success(resultData, currentFilename, currentContentType);
 
@@ -508,24 +526,41 @@ public class ImageProcessorImpl implements ImageProcessor {
      * @throws IOException 写入失败时抛出
      */
     private byte[] imageToBytes(BufferedImage image, String contentType) throws IOException {
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         String formatName = getFormatName(contentType);
-        
+        boolean isJpeg = "jpg".equals(formatName) || "jpeg".equals(formatName);
+
         // JPEG 不支持 Alpha 通道，需要转换为 RGB
         BufferedImage imageToWrite = image;
-        if (("jpg".equals(formatName) || "jpeg".equals(formatName)) && 
-            (image.getType() == BufferedImage.TYPE_INT_ARGB || 
+        if (isJpeg &&
+            (image.getType() == BufferedImage.TYPE_INT_ARGB ||
              image.getType() == BufferedImage.TYPE_INT_ARGB_PRE ||
              image.getType() == BufferedImage.TYPE_4BYTE_ABGR ||
              image.getType() == BufferedImage.TYPE_4BYTE_ABGR_PRE)) {
             log.debug("JPEG 格式不支持 Alpha 通道，转换为 RGB");
             imageToWrite = convertToRGB(image);
         }
-        
-        boolean success = ImageIO.write(imageToWrite, formatName, outputStream);
-        if (!success) {
-            throw new IOException("无法写入图片格式: " + formatName);
+
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+
+        // JPEG 使用指定质量参数编码，避免 ImageIO 默认质量（约 0.75）导致画质下降
+        if (isJpeg) {
+            javax.imageio.ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
+            javax.imageio.ImageWriteParam param = writer.getDefaultWriteParam();
+            param.setCompressionMode(javax.imageio.ImageWriteParam.MODE_EXPLICIT);
+            param.setCompressionQuality(0.85f);
+            try (var ios = ImageIO.createImageOutputStream(outputStream)) {
+                writer.setOutput(ios);
+                writer.write(null, new javax.imageio.IIOImage(imageToWrite, null, null), param);
+            } finally {
+                writer.dispose();
+            }
+        } else {
+            boolean success = ImageIO.write(imageToWrite, formatName, outputStream);
+            if (!success) {
+                throw new IOException("无法写入图片格式: " + formatName);
+            }
         }
+
         return outputStream.toByteArray();
     }
     
