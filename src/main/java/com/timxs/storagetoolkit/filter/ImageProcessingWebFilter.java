@@ -206,95 +206,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                         .flatMap(chain::filter);
                 }
 
-                Instant startTime = Instant.now();
-
-                // 提前检查 Content-Length，大文件直接跳过处理
-                long contentLength = filePart.headers().getContentLength();
-                long maxFileSize = config.getMaxFileSize();
-                if (maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize) {
-                    log.debug("File size {} exceeds max limit {}, skip processing: {}",
-                        contentLength, maxFileSize, filename);
-                    saveSkippedLog(filename, contentType, contentLength, startTime,
-                        "文件大小超过限制（提前检查）", source);
-                    // 重建请求传递下游（multipart 数据已被读取）
-                    return filePart.content().collectList()
-                        .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
-                        .flatMap(chain::filter);
-                }
-
-                // 获取处理许可，限制并发数
-                // 注意：必须在 acquire 时保存 Semaphore 引用，确保 release 同一个对象
-                // 避免配置变更导致的竞态条件
-                final Semaphore permits = getProcessingPermits(config);
-                return Mono.fromCallable(() -> {
-                        permits.acquire();
-                        return permits; // 返回获取许可的 Semaphore 引用
-                    })
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .flatMap(acquiredPermits -> DataBufferUtils.join(filePart.content())
-                        .flatMap(dataBuffer -> {
-                            byte[] imageData = new byte[dataBuffer.readableByteCount()];
-                            dataBuffer.read(imageData);
-                            DataBufferUtils.release(dataBuffer);
-                            long originalSize = imageData.length;
-
-                            // 二次校验文件大小（Content-Length 可能为 -1 被绕过）
-                            if (maxFileSize > 0 && originalSize > maxFileSize) {
-                                log.debug("File size {} exceeds max limit {}, skip processing: {}",
-                                    originalSize, maxFileSize, filename);
-                                saveSkippedLog(filename, contentType, originalSize, startTime,
-                                    "文件大小超过限制", source);
-                                // 用原图数据重建请求，传递下游
-                                DataBuffer buffer = bufferFactory.wrap(imageData);
-                                return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                                    .flatMap(chain::filter);
-                            }
-
-                            // 检查是否需要处理
-                            String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
-                            if (skipReason != null) {
-                                log.debug("File skipped: {} - {}", filename, skipReason);
-                                saveSkippedLog(filename, contentType, originalSize, startTime, skipReason, source);
-                                // 用原图数据重建请求，传递下游
-                                DataBuffer buffer = bufferFactory.wrap(imageData);
-                                return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                                    .flatMap(chain::filter);
-                            }
-
-                            // 处理图片
-                            return imageProcessor.process(imageData, filename, contentType, config)
-                                .flatMap(result -> {
-                                    saveProcessingLog(result, filename, originalSize, startTime, source);
-
-                                    // SUCCESS 或 PARTIAL：用处理后的数据替换原始数据，传递给下游控制器
-                                    if (result.status() == ProcessingStatus.SUCCESS ||
-                                        result.status() == ProcessingStatus.PARTIAL) {
-                                        log.debug("Image processed: {} -> {} ({} bytes -> {} bytes, {}% reduction)",
-                                            filename, result.filename(),
-                                            originalSize, result.data().length,
-                                            originalSize > 0 ? (100 - (result.data().length * 100 / originalSize)) : 0);
-
-                                        DataBuffer buffer = bufferFactory.wrap(result.data());
-                                        return decorateExchange(exchange, parts, filePart, Flux.just(buffer),
-                                                result.filename(), MediaType.parseMediaType(result.contentType()))
-                                            .flatMap(chain::filter);
-                                    }
-
-                                    // SKIPPED 或 FAILED，传递下游
-                                    DataBuffer buffer = bufferFactory.wrap(imageData);
-                                    return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                                        .flatMap(chain::filter);
-                                })
-                                .onErrorResume(e -> {
-                                    log.warn("Image processing error, passing to downstream: {}", e.getMessage());
-                                    // 异常时传递下游
-                                    DataBuffer buffer = bufferFactory.wrap(imageData);
-                                    return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                                        .flatMap(chain::filter);
-                                });
-                        })
-                        .doFinally(signal -> acquiredPermits.release()) // 释放获取许可时的同一个 Semaphore
-                    );
+                return doProcessImage(exchange, chain, parts, filePart, config, source);
             });
     }
 
@@ -359,17 +271,17 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                         .flatMap(chain::filter);
                 }
 
-                return doProcessAttachmentManager(exchange, chain, parts, filePart, config, source);
+                return doProcessImage(exchange, chain, parts, filePart, config, source);
             });
     }
 
     /**
-     * 执行附件管理上传的图片处理
-     * 处理成功（SUCCESS/PARTIAL）时通过 decorateExchange 替换原始数据传递给下游控制器
+     * 执行图片处理核心逻辑（编辑器上传和附件管理共用）
+     * 包含：大小检查 → 信号量控制 → 图片处理 → 结果分发
      */
-    private Mono<Void> doProcessAttachmentManager(ServerWebExchange exchange, WebFilterChain chain,
-                                                   MultiValueMap<String, Part> parts, FilePart filePart,
-                                                   ProcessingConfig config, ProcessingSource source) {
+    private Mono<Void> doProcessImage(ServerWebExchange exchange, WebFilterChain chain,
+                                       MultiValueMap<String, Part> parts, FilePart filePart,
+                                       ProcessingConfig config, ProcessingSource source) {
         String filename = filePart.filename();
         String contentType = getContentType(filePart);
         Instant startTime = Instant.now();
@@ -426,6 +338,11 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                     }
 
                     return imageProcessor.process(imageData, filename, contentType, config)
+                        .onErrorResume(e -> {
+                            // 仅捕获图片处理异常，回退原图
+                            log.warn("Image processing error, passing original to downstream: {}", e.getMessage());
+                            return Mono.just(ProcessingResult.failed(imageData, filename, contentType, e.getMessage()));
+                        })
                         .flatMap(result -> {
                             saveProcessingLog(result, filename, originalSize, startTime, source);
 
@@ -437,21 +354,14 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                                     originalSize, result.data().length,
                                     originalSize > 0 ? (100 - (result.data().length * 100 / originalSize)) : 0);
 
-                                MediaType newContentType = MediaType.parseMediaType(result.contentType());
+                                MediaType processedContentType = MediaType.parseMediaType(result.contentType());
                                 DataBuffer buffer = bufferFactory.wrap(result.data());
                                 return decorateExchange(exchange, parts, filePart, Flux.just(buffer),
-                                        result.filename(), newContentType)
+                                        result.filename(), processedContentType)
                                     .flatMap(chain::filter);
                             }
 
                             // SKIPPED 或 FAILED，传递下游
-                            DataBuffer buffer = bufferFactory.wrap(imageData);
-                            return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                                .flatMap(chain::filter);
-                        })
-                        .onErrorResume(e -> {
-                            log.error("Image processing error, passing to downstream: {}", e.getMessage());
-                            // 异常时传递下游
                             DataBuffer buffer = bufferFactory.wrap(imageData);
                             return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
                                 .flatMap(chain::filter);
