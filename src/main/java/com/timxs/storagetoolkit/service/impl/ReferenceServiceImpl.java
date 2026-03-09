@@ -263,9 +263,9 @@ public class ReferenceServiceImpl implements ReferenceService {
             .flatMap(post -> {
                 String postName = post.getMetadata().getName();
                 String postTitle = post.getSpec().getTitle();
-                // 优先从 status.permalink 获取，为空时 fallback 到 slug 拼接
+                // 仅使用 status.permalink，避免硬编码主题路由
                 String postPermalink = post.getStatus() != null ? post.getStatus().getPermalink() : null;
-                String postUrl = StringUtils.hasText(postPermalink) ? postPermalink : "/archives/" + post.getSpec().getSlug();
+                String postUrl = StringUtils.hasText(postPermalink) ? postPermalink : null;
                 // 检查是否在回收站
                 boolean isDeleted = post.getSpec().getDeleted() != null && post.getSpec().getDeleted();
                 // 检查是否为草稿（headSnapshot != releaseSnapshot）

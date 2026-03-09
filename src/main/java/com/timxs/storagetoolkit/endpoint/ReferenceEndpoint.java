@@ -132,7 +132,7 @@ public class ReferenceEndpoint {
             case "Post" -> client.fetch(Post.class, name)
                 .map(post -> new SubjectInfo(
                     post.getSpec().getTitle(),
-                    "/archives/" + post.getSpec().getSlug()
+                    resolvePostPermalink(post)
                 ))
                 .defaultIfEmpty(new SubjectInfo(name, null));
             case "SinglePage" -> client.fetch(SinglePage.class, name)
@@ -154,7 +154,7 @@ public class ReferenceEndpoint {
                         return client.fetch(Post.class, subName)
                             .map(post -> new SubjectInfo(
                                 post.getSpec().getTitle(),
-                                "/archives/" + post.getSpec().getSlug()
+                                resolvePostPermalink(post)
                             ))
                             .defaultIfEmpty(new SubjectInfo(subName, null));
                     } else if ("SinglePage".equals(subKind)) {
@@ -192,6 +192,17 @@ public class ReferenceEndpoint {
                 .defaultIfEmpty(new SubjectInfo(name, "/console/comments"));
             default -> Mono.just(new SubjectInfo(name, null));
         };
+    }
+
+    /**
+     * 获取文章永久链接（跟随 Halo 实际路由规则）
+     */
+    private String resolvePostPermalink(Post post) {
+        if (post == null || post.getStatus() == null) {
+            return null;
+        }
+        String permalink = post.getStatus().getPermalink();
+        return (permalink != null && !permalink.isBlank()) ? permalink : null;
     }
 
     /**
