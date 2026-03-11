@@ -138,7 +138,7 @@ public class ReferenceEndpoint {
             case "SinglePage" -> client.fetch(SinglePage.class, name)
                 .map(page -> new SubjectInfo(
                     page.getSpec().getTitle(),
-                    "/" + page.getSpec().getSlug()
+                    resolveSinglePagePermalink(page)
                 ))
                 .defaultIfEmpty(new SubjectInfo(name, null));
             case "Moment" -> Mono.just(new SubjectInfo("瞬间", "/moments"));
@@ -161,7 +161,7 @@ public class ReferenceEndpoint {
                         return client.fetch(SinglePage.class, subName)
                             .map(page -> new SubjectInfo(
                                 page.getSpec().getTitle(),
-                                "/" + page.getSpec().getSlug()
+                                resolveSinglePagePermalink(page)
                             ))
                             .defaultIfEmpty(new SubjectInfo(subName, null));
                     } else if ("Moment".equals(subKind)) {
@@ -202,6 +202,17 @@ public class ReferenceEndpoint {
             return null;
         }
         String permalink = post.getStatus().getPermalink();
+        return (permalink != null && !permalink.isBlank()) ? permalink : null;
+    }
+
+    /**
+     * 获取独立页面永久链接（跟随 Halo 实际路由规则）
+     */
+    private String resolveSinglePagePermalink(SinglePage page) {
+        if (page == null || page.getStatusOrDefault() == null) {
+            return null;
+        }
+        String permalink = page.getStatusOrDefault().getPermalink();
         return (permalink != null && !permalink.isBlank()) ? permalink : null;
     }
 
