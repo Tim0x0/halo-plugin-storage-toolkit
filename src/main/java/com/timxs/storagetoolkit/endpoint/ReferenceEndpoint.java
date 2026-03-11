@@ -141,7 +141,7 @@ public class ReferenceEndpoint {
                     resolveSinglePagePermalink(page)
                 ))
                 .defaultIfEmpty(new SubjectInfo(name, null));
-            case "Moment" -> Mono.just(new SubjectInfo("瞬间", "/moments"));
+            case "Moment" -> Mono.just(new SubjectInfo("瞬间", "/moments/" + name));
             case "Comment" -> client.fetch(Comment.class, name)
                 .flatMap(comment -> {
                     var subjectRef = comment.getSpec().getSubjectRef();
@@ -165,7 +165,7 @@ public class ReferenceEndpoint {
                             ))
                             .defaultIfEmpty(new SubjectInfo(subName, null));
                     } else if ("Moment".equals(subKind)) {
-                        return Mono.just(new SubjectInfo("瞬间", "/moments"));
+                        return Mono.just(new SubjectInfo("瞬间", "/moments/" + subName));
                     } else if ("DocTree".equals(subKind)) {
                         return referenceService.resolveDocTreeInfo(subName)
                             .defaultIfEmpty(new SubjectInfo(subName, "/console/comments"));
@@ -209,11 +209,15 @@ public class ReferenceEndpoint {
      * 获取独立页面永久链接（跟随 Halo 实际路由规则）
      */
     private String resolveSinglePagePermalink(SinglePage page) {
-        if (page == null || page.getStatusOrDefault() == null) {
+        if (page == null) {
             return null;
         }
         String permalink = page.getStatusOrDefault().getPermalink();
-        return (permalink != null && !permalink.isBlank()) ? permalink : null;
+        if (permalink != null && !permalink.isBlank()) {
+            return permalink;
+        }
+        // fallback 到 slug 拼接，与扫描服务保持一致
+        return "/" + page.getSpec().getSlug();
     }
 
     /**
