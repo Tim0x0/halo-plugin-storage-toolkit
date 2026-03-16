@@ -8,14 +8,14 @@ group = 'com.timxs.storagetoolkit'
 
 repositories {
     mavenCentral()
-    // Halo snapshot 仓库 - 用于获取 2.22 测试版
+    // Halo snapshot 仓库
     maven { url = 'https://s01.oss.sonatype.org/content/repositories/snapshots/' }
     // JitPack 仓库 - 用于获取 avif-imageio
     maven { url = 'https://jitpack.io' }
 }
 
 dependencies {
-    implementation platform('run.halo.tools.platform:plugin:2.22.0')
+    implementation platform('run.halo.tools.platform:plugin:2.23.0')
     compileOnly 'run.halo.app:api'
 
     // WebP 读写支持（BSD 许可证）
@@ -57,6 +57,6 @@ tasks.named('classes') {
 }
 
 halo {
-    version = '2.22.1'
+    version = '2.23.0'
 }
 
