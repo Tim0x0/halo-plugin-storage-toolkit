@@ -102,7 +102,9 @@ public final class UrlReplacer {
             // 完整 URL → 补充相对路径形式
             String oldPath = extractPath(oldUrl);
             if (StringUtils.hasText(oldPath) && !oldPath.equals(oldUrl)) {
-                String newPath = isFullUrl(newUrl) ? extractPath(newUrl) : newUrl;
+                // 20260407 by Tim 修复 #11：直接使用 newUrl 作为替换目标，不截取路径部分，
+                // 避免跨站替换时（如迁移到外部图床）丢失域名导致指向错误
+                String newPath = newUrl;
                 if (StringUtils.hasText(newPath)) {
                     mapping.put(oldPath, newPath);
                 }

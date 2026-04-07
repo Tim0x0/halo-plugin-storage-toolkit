@@ -372,11 +372,17 @@ public class BrokenLinkServiceImpl implements BrokenLinkService {
         return referenceReplacerService.replaceInSingleSource(
                 sourceType, sourceName, sourceTitle, settingName, referenceTypes,
                 urlMapping, ReplaceSource.BROKEN_LINK)
+            // 20260407 by Tim 记录替换异常的详细信息，便于排查
+            .doOnError(e -> log.warn("替换异常: sourceType={}, sourceName={}, title={}, urlMapping={}",
+                sourceType, sourceName, sourceTitle, urlMapping, e))
             .flatMap(success -> {
                 if (success) {
                     result.incrementSuccess();
                     return Mono.just(source);
                 } else {
+                    // 20260407 by Tim 记录替换失败的详细信息，便于排查
+                    log.warn("替换失败（内容中未找到匹配 URL）: sourceType={}, sourceName={}, title={}, urlMapping={}",
+                        sourceType, sourceName, sourceTitle, urlMapping);
                     result.addFailure(sourceType, sourceName, sourceTitle, "替换失败");
                     return Mono.empty();
                 }
