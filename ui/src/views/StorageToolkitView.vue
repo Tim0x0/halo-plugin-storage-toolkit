@@ -30,13 +30,29 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { VPageHeader, IconFolder } from '@halo-dev/components'
-import ProcessingLogsPanel from './panels/ProcessingLogsPanel.vue'
-import StatisticsPanel from './panels/StatisticsPanel.vue'
-import AnalysisPanel from './panels/AnalysisPanel.vue'
-import BatchProcessingPanel from './panels/BatchProcessingPanel.vue'
+import { VPageHeader, IconFolder, VLoading } from '@halo-dev/components'
+
+const ProcessingLogsPanel = defineAsyncComponent({
+  loader: () => import(/* webpackChunkName: "processing-logs-panel" */ './panels/ProcessingLogsPanel.vue'),
+  loadingComponent: VLoading
+})
+
+const StatisticsPanel = defineAsyncComponent({
+  loader: () => import(/* webpackChunkName: "statistics-panel" */ './panels/StatisticsPanel.vue'),
+  loadingComponent: VLoading
+})
+
+const AnalysisPanel = defineAsyncComponent({
+  loader: () => import(/* webpackChunkName: "analysis-panel" */ './panels/AnalysisPanel.vue'),
+  loadingComponent: VLoading
+})
+
+const BatchProcessingPanel = defineAsyncComponent({
+  loader: () => import(/* webpackChunkName: "batch-processing-panel" */ './panels/BatchProcessingPanel.vue'),
+  loadingComponent: VLoading
+})
 
 const route = useRoute()
 const router = useRouter()
