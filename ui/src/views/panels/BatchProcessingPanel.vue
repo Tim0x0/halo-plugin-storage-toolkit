@@ -153,7 +153,7 @@
               <td class="cell-name" @click.stop="openPreview(att)">
                 <img
                   v-if="att.permalink && isImage(att.mediaType)"
-                  :src="att.permalink"
+                  :src="utils.attachment.getThumbnailUrl(att.permalink, 'S')"
                   class="file-thumbnail"
                   loading="lazy"
                   @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
@@ -300,6 +300,7 @@ import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes } from '@/utils/format'
 import { getFileIcon, isImage } from '@/composables/useReferenceSource'
+import { utils } from '@halo-dev/ui-shared'
 
 interface AttachmentItem {
   name: string
