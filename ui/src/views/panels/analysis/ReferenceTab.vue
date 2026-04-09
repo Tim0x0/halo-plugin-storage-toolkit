@@ -10,9 +10,9 @@
         <button class="btn-clear" @click="clearRecords" :disabled="scanning || !stats.lastScanTime">
           清空记录
         </button>
-        <button 
-          class="btn-delete" 
-          @click="deleteSelected" 
+        <button
+          class="btn-delete"
+          @click="deleteSelected"
           :disabled="scanning || selectedAttachments.length === 0"
           v-if="filterType === 'unreferenced' && attachmentList.length > 0"
         >
@@ -80,9 +80,9 @@
           <thead>
             <tr>
               <th class="col-checkbox" v-if="filterType === 'unreferenced'">
-                <input 
-                  type="checkbox" 
-                  :checked="isAllSelected" 
+                <input
+                  type="checkbox"
+                  :checked="isAllSelected"
                   :indeterminate="isIndeterminate"
                   @change="toggleSelectAll"
                 />
@@ -100,16 +100,16 @@
           <tbody>
             <tr v-for="item in attachmentList" :key="item.attachmentName" :class="{ highlighted: highlightedAttachment === item.attachmentName, selected: selectedAttachments.includes(item.attachmentName) }">
               <td class="col-checkbox" v-if="filterType === 'unreferenced'">
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   :checked="selectedAttachments.includes(item.attachmentName)"
                   @change="toggleSelect(item.attachmentName)"
                 />
               </td>
               <td class="cell-name">
-                <img 
-                  v-if="item.mediaType?.startsWith('image/') && item.permalink" 
-                  :src="item.permalink" 
+                <img
+                  v-if="item.mediaType?.startsWith('image/') && item.permalink"
+                  :src="utils.attachment.getThumbnailUrl(item.permalink, 'S')"
                   class="file-thumbnail"
                   @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
                 />
@@ -119,7 +119,7 @@
               <td>{{ item.mediaType }}</td>
               <td>{{ formatBytes(item.size) }}</td>
               <td>
-                <span 
+                <span
                   :class="['ref-count', item.referenceCount > 0 ? 'has-ref' : 'no-ref']"
                   @click="item.referenceCount > 0 && showReferenceDetail(item)"
                   :style="{ cursor: item.referenceCount > 0 ? 'pointer' : 'default' }"
@@ -129,9 +129,9 @@
               </td>
               <td>
                 <div class="ref-locations" v-if="item.references && item.references.length > 0">
-                  <span 
-                    :class="['location-tag', getSourceTypeClass(type)]" 
-                    v-for="type in getUniqueSourceTypes(item.references)" 
+                  <span
+                    :class="['location-tag', getSourceTypeClass(type)]"
+                    v-for="type in getUniqueSourceTypes(item.references)"
                     :key="type"
                     :title="getSourceTypeLabel(type)"
                   >
@@ -176,7 +176,7 @@
           <div class="preview-area preview-placeholder" v-else>
             <span class="preview-icon">{{ getFileIcon(selectedAttachment?.mediaType || '') }}</span>
           </div>
-          
+
           <!-- 文件信息 -->
           <div class="info-section">
             <div class="info-item">
@@ -200,7 +200,7 @@
               <span class="info-value info-url">{{ selectedAttachment.permalink }}</span>
             </div>
           </div>
-          
+
           <!-- 引用列表 -->
           <ReferenceList
             :references="selectedAttachment?.references"
@@ -225,6 +225,7 @@ import type { ReferenceSource } from '@/types/duplicate'
 import { getFileIcon, getSourceTypeLabel, getSourceTypeClass, getUniqueSourceTypes } from '@/composables/useReferenceSource'
 import ReferenceList from '@/components/ReferenceList.vue'
 import type { ReferenceSourceItem } from '@/components/ReferenceList.vue'
+import { utils } from '@halo-dev/ui-shared'
 
 interface AttachmentReferenceVo {
   attachmentName: string
@@ -288,7 +289,7 @@ const referenceRate = computed(() => {
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const isAllSelected = computed(() => {
-  return attachmentList.value.length > 0 && 
+  return attachmentList.value.length > 0 &&
     attachmentList.value.every(item => selectedAttachments.value.includes(item.attachmentName))
 })
 

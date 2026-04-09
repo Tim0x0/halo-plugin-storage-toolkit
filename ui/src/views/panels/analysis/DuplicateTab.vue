@@ -10,9 +10,9 @@
         <button class="btn-clear" @click="clearRecords" :disabled="scanning || !stats.lastScanTime">
           清空记录
         </button>
-        <button 
-          class="btn-delete" 
-          @click="deleteSelected" 
+        <button
+          class="btn-delete"
+          @click="deleteSelected"
           :disabled="totalSelectedCount === 0"
           v-if="duplicateGroups.length > 0"
         >
@@ -64,8 +64,8 @@
       <div class="group-card" v-for="group in duplicateGroups" :key="group.md5Hash">
         <div class="group-header">
           <div class="group-info">
-            <input 
-              type="checkbox" 
+            <input
+              type="checkbox"
               class="group-checkbox"
               :checked="isGroupAllSelected(group)"
               :indeterminate="isGroupIndeterminate(group)"
@@ -90,9 +90,9 @@
                 :checked="isFileSelected(group.md5Hash, file.attachmentName)"
                 @change="toggleFileSelect(group.md5Hash, file.attachmentName)"
               />
-              <img 
-                v-if="file.permalink && isImage(file.mediaType)" 
-                :src="file.permalink" 
+              <img
+                v-if="file.permalink && isImage(file.mediaType)"
+                :src="utils.attachment.getThumbnailUrl(file.permalink, 'S')"
                 class="file-thumb"
                 loading="lazy"
               />
@@ -258,6 +258,7 @@ import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
 import { getFileIcon, isImage } from '@/composables/useReferenceSource'
 import ReferenceList from '@/components/ReferenceList.vue'
+import { utils } from '@halo-dev/ui-shared'
 
 // 删除确认弹窗
 const showDeleteDialog = ref(false)
