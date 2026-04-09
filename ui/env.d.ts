@@ -1,4 +1,4 @@
-/// <reference types="vite/client" />
+/// <reference types="@rsbuild/core/types" />
 /// <reference types="unplugin-icons/types/vue" />
 
 // Vue 单文件组件类型声明
