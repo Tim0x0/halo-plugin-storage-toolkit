@@ -168,19 +168,7 @@
         </table>
 
         <!-- 分页 -->
-        <div class="pagination" v-if="total > 0">
-          <div class="page-info">共 {{ total }} 条，已选 {{ selectedAttachments.length }} 条</div>
-          <div class="page-controls">
-            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-            <span class="page-num">{{ page }} / {{ totalPages }}</span>
-            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-          </div>
-          <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
-            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
-              {{ size }}条/页
-            </option>
-          </select>
-        </div>
+        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS"></VPagination>
       </template>
     </div>
 
@@ -293,9 +281,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes } from '@/utils/format'
@@ -405,8 +393,6 @@ const groupDisplayName = ref<string | null>(null)
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let pollingTimer: ReturnType<typeof setTimeout> | null = null
-
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const progressPercent = computed(() => {
   if (!status.value.progress || status.value.progress.total === 0) return 0
@@ -631,18 +617,9 @@ const handleSearchDebounced = () => {
   }, 300)
 }
 
-const changePage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value) {
-    page.value = newPage
-    fetchAttachments()
-  }
-}
-
-const handlePageSizeChange = () => {
-  page.value = 1
-  selectedAttachments.value = []
+watch([page, pageSize], () => {
   fetchAttachments()
-}
+})
 
 // 打开预览
 const openPreview = async (att: AttachmentItem) => {
