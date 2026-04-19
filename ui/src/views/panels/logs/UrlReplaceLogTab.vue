@@ -119,29 +119,15 @@
       </table>
 
       <!-- 分页 -->
-      <div class="pagination" v-if="total > 0">
-        <div class="page-info">共 {{ total }} 条</div>
-        <div class="page-controls">
-          <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">
-            上一页
-          </button>
-          <span class="page-num">{{ page }} / {{ totalPages }}</span>
-          <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">
-            下一页
-          </button>
-        </div>
-        <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
-          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}条/页</option>
-        </select>
-      </div>
+      <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VPagination } from '@halo-dev/components'
 import { API_ENDPOINTS } from '@/constants/api'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { formatTime } from '@/utils/format'
@@ -189,8 +175,6 @@ const debouncedFetch = () => {
     fetchLogs()
   }, 300)
 }
-
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const fetchLogs = async () => {
   loading.value = true
@@ -263,18 +247,6 @@ const handleFilterChange = () => {
   fetchLogs()
 }
 
-const changePage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value) {
-    page.value = newPage
-    fetchLogs()
-  }
-}
-
-const handlePageSizeChange = () => {
-  page.value = 1
-  fetchLogs()
-}
-
 const getSourceLabel = (source: string): string => {
   const labels: Record<string, string> = {
     'broken-link': '断链替换',
@@ -310,6 +282,10 @@ const getReferenceTypeLabel = (refType: string): string => {
 
 onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer)
+})
+
+watch([page, pageSize], () => {
+  fetchLogs()
 })
 
 onMounted(() => handleRefresh())

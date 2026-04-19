@@ -150,19 +150,7 @@
         </table>
 
         <!-- 分页 -->
-        <div class="pagination" v-if="total > 0">
-          <div class="page-info">共 {{ total }} 条</div>
-          <div class="page-controls">
-            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-            <span class="page-num">{{ page }} / {{ totalPages }}</span>
-            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-          </div>
-          <select v-model="pageSize" class="page-size" @change="onPageSizeChange">
-            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
-              {{ size }}条/页
-            </option>
-          </select>
-        </div>
+        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
       </template>
     </div>
 
@@ -238,9 +226,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatTime } from '@/utils/format'
@@ -315,8 +303,6 @@ const replaceInputRef = ref<HTMLInputElement | null>(null)
 
 const searchDebounceTimer = ref<number>()
 const pollTimer = ref<number>()
-
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const isAllSelected = computed(() => {
   return brokenLinks.value.length > 0 &&
@@ -579,19 +565,6 @@ const pollScanStatus = () => {
   poll()
 }
 
-const changePage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value) {
-    page.value = newPage
-    fetchBrokenLinks()
-  }
-}
-
-const onPageSizeChange = () => {
-  page.value = 1
-  selectedUrls.value = []
-  fetchBrokenLinks()
-}
-
 const truncateUrl = (url: string): string => {
   if (!url) return ''
   return url.length > 60 ? url.substring(0, 60) + '...' : url
@@ -646,6 +619,10 @@ onUnmounted(() => {
   if (searchDebounceTimer.value) {
     clearTimeout(searchDebounceTimer.value)
   }
+})
+
+watch([page, pageSize], () => {
+  fetchBrokenLinks()
 })
 </script>
 
