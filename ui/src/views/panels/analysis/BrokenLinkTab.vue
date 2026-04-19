@@ -368,7 +368,7 @@ const fetchStats = async () => {
 const fetchBrokenLinks = async () => {
   loading.value = true
   try {
-    const params: Record<string, any> = { page: page.value, size: pageSize.value }
+    const params: Record<string, string | number> = { page: page.value, size: pageSize.value }
     if (filterSourceType.value) params.sourceType = filterSourceType.value
     if (filterReason.value) params.reason = filterReason.value
     if (searchKeyword.value) params.keyword = searchKeyword.value
@@ -390,7 +390,7 @@ const startScan = async () => {
   try {
     await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_SCAN)
     pollScanStatus()
-  } catch (error: any) {
+  } catch {
     scanning.value = false
   }
 }
@@ -419,9 +419,8 @@ const clearRecords = () => {
         brokenLinks.value = []
         total.value = 0
         selectedUrls.value = []
-      } catch (error: any) {
+      } catch {
         Toast.error('清空记录失败')
-        console.error('清空记录失败:', error)
       }
     }
   })
@@ -451,8 +450,9 @@ const ignoreSelected = () => {
         )
         total.value = Math.max(0, total.value - selectedUrls.value.length)
         selectedUrls.value = []
-      } catch (error: any) {
-        Toast.error('操作失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
       }
     }
   })
@@ -477,8 +477,9 @@ const ignoreSingle = async (link: BrokenLinkVo | null) => {
         brokenLinks.value = brokenLinks.value.filter(item => item.url !== link.url)
         total.value = Math.max(0, total.value - 1)
         return true
-      } catch (error: any) {
-        Toast.error('操作失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
         return false
       }
     }
@@ -536,11 +537,12 @@ const executeReplace = async () => {
       showReplaceForm.value = false
       replaceNewUrl.value = ''
     } else {
-      const failMsg = data.failures?.map((f: any) => `${f.sourceTitle || f.sourceName}: ${f.errorMessage}`).join('; ') || '未知错误'
+      const failMsg = data.failures?.map((f: { sourceTitle?: string; sourceName?: string; errorMessage?: string }) => `${f.sourceTitle || f.sourceName}: ${f.errorMessage}`).join('; ') || '未知错误'
       Toast.error(`替换失败：${failMsg}`)
     }
-  } catch (error: any) {
-    Toast.error('替换操作失败: ' + (error.response?.data?.message || error.message))
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { message?: string } }; message?: string }
+    Toast.error('替换操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
   } finally {
     replacing.value = false
   }

@@ -57,7 +57,7 @@
     <!-- 日志列表 -->
     <div class="logs-container">
       <div v-if="loading" class="loading-state">加载中...</div>
-      
+
       <div v-else-if="logs.length === 0" class="empty-state">
         <div class="empty-icon">📋</div>
         <div class="empty-text">暂无处理日志</div>
@@ -194,7 +194,7 @@ const fetchStats = async () => {
   try {
     const { data } = await axiosInstance.get(API_ENDPOINTS.PROCESSING_LOGS_STATS)
     stats.value = data
-  } catch (error) {
+  } catch {
     stats.value = { totalProcessed: 0, successCount: 0, failedCount: 0, skippedCount: 0, partialCount: 0, totalSavedBytes: 0 }
   }
 }
@@ -226,7 +226,7 @@ const handleClearAll = () => {
           total.value = 0
           page.value = 1
         }
-      } catch (error) {
+      } catch {
         Toast.error('清空失败')
       } finally {
         clearing.value = false

@@ -134,7 +134,7 @@ async function fetchSettingGroupLabel(settingName: string, groupKey: string): Pr
     const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_SETTING_GROUP_LABEL(settingName, groupKey))
     settingGroupLabelCache.value[cacheKey] = data.label
     return data.label
-  } catch (e) {
+  } catch {
     settingGroupLabelCache.value[cacheKey] = groupKey
     return groupKey
   }
@@ -222,7 +222,7 @@ watch(() => props.references, async (refs) => {
           } else {
             ref.sourceUrl = ''
           }
-        } catch (e) {
+        } catch (e: unknown) {
           console.debug('解析引用源失败:', e)
           ref.sourceUrl = ''
         }
@@ -246,7 +246,7 @@ watch(() => props.references, async (refs) => {
           } else {
             ref.sourceUrl = ''
           }
-        } catch (e) {
+        } catch (e: unknown) {
           console.debug('解析文档引用源失败:', e)
           ref.sourceUrl = ''
         }

@@ -179,7 +179,7 @@ const debouncedFetch = () => {
 const fetchLogs = async () => {
   loading.value = true
   try {
-    const params: Record<string, any> = { page: page.value, size: pageSize.value }
+    const params: Record<string, string | number> = { page: page.value, size: pageSize.value }
     if (filterSource.value) params.source = filterSource.value
     if (filterKeyword.value) params.keyword = filterKeyword.value
 
@@ -233,7 +233,7 @@ const clearLogs = () => {
             batchProcessingCount: 0
           }
         }
-      } catch (error) {
+      } catch {
         Toast.error('清空失败')
       } finally {
         clearing.value = false

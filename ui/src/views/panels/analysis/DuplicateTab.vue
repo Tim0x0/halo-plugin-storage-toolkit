@@ -385,7 +385,7 @@ const handleDeleteConfirm = async () => {
           }
         }
       }
-    } catch (error: any) {
+    } catch {
       // HTTP 级别错误，整组视为失败
       totalFailed += attachmentNames.length
     }
@@ -439,7 +439,7 @@ const startScan = async () => {
     await axiosInstance.post(API_ENDPOINTS.DUPLICATES_SCAN)
     // 轮询扫描状态
     pollScanStatus()
-  } catch (error: any) {
+  } catch {
     scanning.value = false
     // 错误信息由 Halo 统一处理，这里不需要额外弹窗
   }
@@ -472,9 +472,8 @@ const clearRecords = () => {
         }
         duplicateGroups.value = []
         total.value = 0
-      } catch (error: any) {
+      } catch {
         Toast.error('清空记录失败')
-        console.error('清空记录失败:', error)
       }
     }
   })

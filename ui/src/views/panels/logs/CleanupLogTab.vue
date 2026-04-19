@@ -135,7 +135,7 @@ const debouncedFetch = () => {
 const fetchLogs = async () => {
   loading.value = true
   try {
-    const params: Record<string, any> = { page: page.value, size: pageSize.value }
+    const params: Record<string, string | number> = { page: page.value, size: pageSize.value }
     if (filterReason.value) params.reason = filterReason.value
     if (filterFilename.value) params.filename = filterFilename.value
 
@@ -182,7 +182,7 @@ const clearLogs = () => {
           page.value = 1
           stats.value = { totalCount: 0, duplicateCount: 0, unreferencedCount: 0, freedBytes: 0 }
         }
-      } catch (error) {
+      } catch {
         Toast.error('清空失败')
       } finally {
         clearing.value = false

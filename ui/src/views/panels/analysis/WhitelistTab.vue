@@ -298,8 +298,9 @@ const confirmDelete = (item: WhitelistEntry) => {
         whitelist.value = whitelist.value.filter(i => i.name !== item.name)
         Toast.success('删除成功')
         return true
-      } catch (error: any) {
-        Toast.error('删除失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('删除失败: ' + (err.response?.data?.message || err.message || '未知错误'))
         return false
       }
     }
@@ -320,8 +321,9 @@ const clearAll = () => {
         whitelist.value = []
         Toast.success('清空成功')
         return true
-      } catch (error: any) {
-        Toast.error('清空失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('清空失败: ' + (err.response?.data?.message || err.message || '未知错误'))
         return false
       }
     }

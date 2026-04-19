@@ -339,8 +339,9 @@ const deleteSelected = () => {
         )
         total.value = Math.max(0, total.value - toDelete.length)
         selectedAttachments.value = []
-      } catch (error: any) {
-        Toast.error('删除失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('删除失败: ' + (err.response?.data?.message || err.message || '未知错误'))
       }
     }
   })
@@ -397,7 +398,7 @@ const startScan = async () => {
     await axiosInstance.post(API_ENDPOINTS.REFERENCES_SCAN)
     // 轮询扫描状态
     pollScanStatus()
-  } catch (error: any) {
+  } catch {
     scanning.value = false
     // 错误信息由 Halo 统一处理，这里不需要额外弹窗
   }
@@ -426,9 +427,8 @@ const clearRecords = () => {
         }
         attachmentList.value = []
         total.value = 0
-      } catch (error: any) {
+      } catch {
         Toast.error('清空记录失败')
-        console.error('清空记录失败:', error)
       }
     }
   })
@@ -463,7 +463,7 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
     try {
       const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_POLICY(item.policyName))
       policyDisplayName.value = data.displayName
-    } catch (e) {
+    } catch {
       policyDisplayName.value = item.policyName
     }
   } else {
@@ -475,7 +475,7 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
     try {
       const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_GROUP(item.groupName))
       groupDisplayName.value = data.displayName
-    } catch (e) {
+    } catch {
       groupDisplayName.value = item.groupName
     }
   } else {

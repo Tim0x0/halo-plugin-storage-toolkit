@@ -656,7 +656,7 @@ const openPreview = async (att: AttachmentItem) => {
     try {
       const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_POLICY(att.policyName))
       policyDisplayName.value = data.displayName
-    } catch (e) {
+    } catch {
       policyDisplayName.value = att.policyName
     }
   } else {
@@ -668,7 +668,7 @@ const openPreview = async (att: AttachmentItem) => {
     try {
       const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_GROUP(att.groupName))
       groupDisplayName.value = data.displayName
-    } catch (e) {
+    } catch {
       groupDisplayName.value = att.groupName
     }
   } else {
