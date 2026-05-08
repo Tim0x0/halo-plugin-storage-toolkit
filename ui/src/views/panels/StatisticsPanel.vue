@@ -96,8 +96,8 @@
         <div class="card-title">
           <span>详细数据</span>
           <div class="tab-btns">
-            <button 
-              v-for="tab in tabs" 
+            <button
+              v-for="tab in tabs"
               :key="tab.id"
               :class="['tab-btn', { active: currentTab === tab.id }]"
               @click="switchTab(tab.id)"
@@ -143,7 +143,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import type { StatisticsData, CategoryStats } from '@/types/statistics'
+import type { StatisticsData } from '@/types/statistics'
 import { API_ENDPOINTS } from '@/constants/api'
 import echarts from '@/echarts'
 
@@ -251,7 +251,7 @@ const createPieOption = (data: Array<{ name: string; count: number; size: number
     tooltip: {
       trigger: 'item',
       renderMode: 'html',
-      formatter: (params: any) => {
+      formatter: (params: { data: { name: string; count: number; size: number; percent: number } }) => {
         const d = params.data
         return `${d.name}<br/>文件数: ${d.count.toLocaleString()}<br/>大小: ${formatBytes(d.size)}<br/>占比: ${d.percent} %`
       }

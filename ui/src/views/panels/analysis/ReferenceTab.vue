@@ -108,6 +108,7 @@
                 />
               </td>
               <td class="cell-name">
+                <div class="cell-name-inner">
                 <img
                   v-if="item.mediaType?.startsWith('image/') && item.permalink"
                   :src="utils.attachment.getThumbnailUrl(item.permalink, 'S')"
@@ -116,6 +117,7 @@
                 />
                 <span v-else class="file-icon">{{ getFileIcon(item.mediaType) }}</span>
                 <span class="file-name-text" @click="showReferenceDetail(item)" :title="item.displayName">{{ item.displayName }}</span>
+                </div>
               </td>
               <td>{{ item.mediaType }}</td>
               <td>{{ formatBytes(item.size) }}</td>
@@ -147,19 +149,7 @@
         </div>
 
         <!-- 分页 -->
-        <div class="pagination" v-if="total > 0">
-          <div class="page-info">共 {{ total }} 条</div>
-          <div class="page-controls">
-            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-            <span class="page-num">{{ page }} / {{ totalPages }}</span>
-            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-          </div>
-          <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
-            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
-              {{ size }}条/页
-            </option>
-          </select>
-        </div>
+        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
       </template>
     </div>
 
@@ -219,7 +209,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
@@ -288,8 +278,6 @@ const referenceRate = computed(() => {
   return ((referenced / total) * 100).toFixed(2)
 })
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-
 const isAllSelected = computed(() => {
   return attachmentList.value.length > 0 &&
     attachmentList.value.every(item => selectedAttachments.value.includes(item.attachmentName))
@@ -305,21 +293,21 @@ let pollTimerRef: ReturnType<typeof setTimeout> | null = null
 const handleSearchDebounced = () => {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
-    page.value = 1
-    fetchReferences()
+    if (page.value !== 1) {
+      page.value = 1
+    } else {
+      fetchReferences()
+    }
   }, 300)
 }
 
 const handleFilterChange = () => {
-  page.value = 1
   selectedAttachments.value = []
-  fetchReferences()
-}
-
-const handlePageSizeChange = () => {
-  page.value = 1
-  selectedAttachments.value = []
-  fetchReferences()
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchReferences()
+  }
 }
 
 const toggleSelectAll = () => {
@@ -361,8 +349,9 @@ const deleteSelected = () => {
         )
         total.value = Math.max(0, total.value - toDelete.length)
         selectedAttachments.value = []
-      } catch (error: any) {
-        Toast.error('删除失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('删除失败: ' + (err.response?.data?.message || err.message || '未知错误'))
       }
     }
   })
@@ -376,13 +365,6 @@ const toggleSort = (field: string) => {
     sortDesc.value = true
   }
   fetchReferences()
-}
-
-const changePage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value) {
-    page.value = newPage
-    fetchReferences()
-  }
 }
 
 const fetchStats = async () => {
@@ -426,7 +408,7 @@ const startScan = async () => {
     await axiosInstance.post(API_ENDPOINTS.REFERENCES_SCAN)
     // 轮询扫描状态
     pollScanStatus()
-  } catch (error: any) {
+  } catch {
     scanning.value = false
     // 错误信息由 Halo 统一处理，这里不需要额外弹窗
   }
@@ -455,9 +437,8 @@ const clearRecords = () => {
         }
         attachmentList.value = []
         total.value = 0
-      } catch (error: any) {
+      } catch {
         Toast.error('清空记录失败')
-        console.error('清空记录失败:', error)
       }
     }
   })
@@ -492,7 +473,7 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
     try {
       const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_POLICY(item.policyName))
       policyDisplayName.value = data.displayName
-    } catch (e) {
+    } catch {
       policyDisplayName.value = item.policyName
     }
   } else {
@@ -504,7 +485,7 @@ const showReferenceDetail = async (item: AttachmentReferenceVo) => {
     try {
       const { data } = await axiosInstance.get(API_ENDPOINTS.REFERENCES_GROUP(item.groupName))
       groupDisplayName.value = data.displayName
-    } catch (e) {
+    } catch {
       groupDisplayName.value = item.groupName
     }
   } else {
@@ -559,6 +540,13 @@ onUnmounted(() => {
   }
 })
 
+watch([page, pageSize], ([, newSize], [, oldSize]) => {
+  if (newSize !== oldSize) {
+    selectedAttachments.value = []
+  }
+  fetchReferences()
+})
+
 watch(() => route.query.attachment, () => {
   handleUrlParams()
 })
@@ -566,6 +554,7 @@ watch(() => route.query.attachment, () => {
 
 
 <style scoped>
+
 .reference-tab {
   display: flex;
   flex-direction: column;
@@ -751,6 +740,7 @@ watch(() => route.query.attachment, () => {
   padding: 12px 16px;
   text-align: left;
   border-bottom: 1px solid #f4f4f5;
+  vertical-align: middle;
 }
 
 .data-table th {
@@ -818,10 +808,14 @@ watch(() => route.query.attachment, () => {
 }
 
 .cell-name {
+  cursor: pointer;
+  min-width: 0;
+}
+
+.cell-name-inner {
   display: flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
   min-width: 0;
 }
 

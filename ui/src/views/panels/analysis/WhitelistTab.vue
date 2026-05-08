@@ -85,19 +85,7 @@
         </div>
 
         <!-- 分页 -->
-        <div class="pagination" v-if="totalPages > 1">
-          <div class="page-info">共 {{ filteredWhitelist.length }} 条</div>
-          <div class="page-controls">
-            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-            <span class="page-num">{{ page }} / {{ totalPages }}</span>
-            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-          </div>
-          <select v-model="pageSize" class="page-size" @change="onPageSizeChange">
-            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
-              {{ size }}条/页
-            </option>
-          </select>
-        </div>
+        <VPagination v-if="filteredWhitelist.length > 0" v-model:page="page" v-model:size="pageSize" :total="filteredWhitelist.length" :size-options="PAGE_SIZE_OPTIONS" />
       </template>
     </div>
 
@@ -165,7 +153,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 
@@ -300,8 +288,9 @@ const confirmDelete = (item: WhitelistEntry) => {
         whitelist.value = whitelist.value.filter(i => i.name !== item.name)
         Toast.success('删除成功')
         return true
-      } catch (error: any) {
-        Toast.error('删除失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('删除失败: ' + (err.response?.data?.message || err.message || '未知错误'))
         return false
       }
     }
@@ -322,21 +311,13 @@ const clearAll = () => {
         whitelist.value = []
         Toast.success('清空成功')
         return true
-      } catch (error: any) {
-        Toast.error('清空失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('清空失败: ' + (err.response?.data?.message || err.message || '未知错误'))
         return false
       }
     }
   })
-}
-
-// 分页处理
-const changePage = (newPage: number) => {
-  page.value = newPage
-}
-
-const onPageSizeChange = () => {
-  page.value = 1
 }
 
 // 初始化

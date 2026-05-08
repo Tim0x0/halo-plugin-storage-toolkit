@@ -115,19 +115,7 @@
       </div>
 
       <!-- 分页 -->
-      <div class="pagination" v-if="total > pageSize">
-        <div class="page-info">共 {{ total }} 组</div>
-        <div class="page-controls">
-          <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-          <span class="page-num">{{ page }} / {{ totalPages }}</span>
-          <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-        </div>
-        <select v-model="pageSize" class="page-size" @change="onPageSizeChange">
-          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
-            {{ size }}组/页
-          </option>
-        </select>
-      </div>
+        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
     </div>
 
     <!-- 空状态 -->
@@ -249,10 +237,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { DuplicateStats, DuplicateGroup, DuplicateFile } from '@/types/duplicate'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
@@ -292,8 +280,6 @@ const previewFileSize = ref<number>(0)
 
 // 轮询定时器
 const pollTimer = ref<number>()
-
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const openPreview = (file: DuplicateFile, size: number) => {
   previewFile.value = file
@@ -399,7 +385,7 @@ const handleDeleteConfirm = async () => {
           }
         }
       }
-    } catch (error: any) {
+    } catch {
       // HTTP 级别错误，整组视为失败
       totalFailed += attachmentNames.length
     }
@@ -453,7 +439,7 @@ const startScan = async () => {
     await axiosInstance.post(API_ENDPOINTS.DUPLICATES_SCAN)
     // 轮询扫描状态
     pollScanStatus()
-  } catch (error: any) {
+  } catch {
     scanning.value = false
     // 错误信息由 Halo 统一处理，这里不需要额外弹窗
   }
@@ -486,9 +472,8 @@ const clearRecords = () => {
         }
         duplicateGroups.value = []
         total.value = 0
-      } catch (error: any) {
+      } catch {
         Toast.error('清空记录失败')
-        console.error('清空记录失败:', error)
       }
     }
   })
@@ -513,18 +498,6 @@ const pollScanStatus = () => {
   poll()
 }
 
-const changePage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value) {
-    page.value = newPage
-    fetchDuplicateGroups()
-  }
-}
-
-const onPageSizeChange = () => {
-  page.value = 1
-  fetchDuplicateGroups()
-}
-
 onMounted(async () => {
   await fetchStats()
   if (stats.value.phase === 'SCANNING') {
@@ -539,6 +512,10 @@ onUnmounted(() => {
   if (pollTimer.value) {
     clearTimeout(pollTimer.value)
   }
+})
+
+watch([page, pageSize], () => {
+  fetchDuplicateGroups()
 })
 </script>
 

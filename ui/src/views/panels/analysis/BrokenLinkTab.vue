@@ -152,19 +152,7 @@
         </div>
 
         <!-- 分页 -->
-        <div class="pagination" v-if="total > 0">
-          <div class="page-info">共 {{ total }} 条</div>
-          <div class="page-controls">
-            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-            <span class="page-num">{{ page }} / {{ totalPages }}</span>
-            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
-          </div>
-          <select v-model="pageSize" class="page-size" @change="onPageSizeChange">
-            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">
-              {{ size }}条/页
-            </option>
-          </select>
-        </div>
+        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
       </template>
     </div>
 
@@ -240,9 +228,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast } from '@halo-dev/components'
+import { Dialog, Toast, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatTime } from '@/utils/format'
@@ -318,8 +306,6 @@ const replaceInputRef = ref<HTMLInputElement | null>(null)
 const searchDebounceTimer = ref<number>()
 const pollTimer = ref<number>()
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-
 const isAllSelected = computed(() => {
   return brokenLinks.value.length > 0 &&
     brokenLinks.value.every(item => selectedUrls.value.includes(item.url))
@@ -332,14 +318,20 @@ const isIndeterminate = computed(() => {
 const handleSearchDebounced = () => {
   clearTimeout(searchDebounceTimer.value)
   searchDebounceTimer.value = window.setTimeout(() => {
-    page.value = 1
-    fetchBrokenLinks()
+    if (page.value !== 1) {
+      page.value = 1
+    } else {
+      fetchBrokenLinks()
+    }
   }, 300)
 }
 
 const handleFilterChange = () => {
-  page.value = 1
-  fetchBrokenLinks()
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchBrokenLinks()
+  }
 }
 
 const toggleSelectAll = () => {
@@ -384,7 +376,7 @@ const fetchStats = async () => {
 const fetchBrokenLinks = async () => {
   loading.value = true
   try {
-    const params: Record<string, any> = { page: page.value, size: pageSize.value }
+    const params: Record<string, string | number> = { page: page.value, size: pageSize.value }
     if (filterSourceType.value) params.sourceType = filterSourceType.value
     if (filterReason.value) params.reason = filterReason.value
     if (searchKeyword.value) params.keyword = searchKeyword.value
@@ -406,7 +398,7 @@ const startScan = async () => {
   try {
     await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_SCAN)
     pollScanStatus()
-  } catch (error: any) {
+  } catch {
     scanning.value = false
   }
 }
@@ -435,9 +427,8 @@ const clearRecords = () => {
         brokenLinks.value = []
         total.value = 0
         selectedUrls.value = []
-      } catch (error: any) {
+      } catch {
         Toast.error('清空记录失败')
-        console.error('清空记录失败:', error)
       }
     }
   })
@@ -467,8 +458,9 @@ const ignoreSelected = () => {
         )
         total.value = Math.max(0, total.value - selectedUrls.value.length)
         selectedUrls.value = []
-      } catch (error: any) {
-        Toast.error('操作失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
       }
     }
   })
@@ -493,8 +485,9 @@ const ignoreSingle = async (link: BrokenLinkVo | null) => {
         brokenLinks.value = brokenLinks.value.filter(item => item.url !== link.url)
         total.value = Math.max(0, total.value - 1)
         return true
-      } catch (error: any) {
-        Toast.error('操作失败: ' + (error.response?.data?.message || error.message))
+      } catch (error: unknown) {
+        const err = error as { response?: { data?: { message?: string } }; message?: string }
+        Toast.error('操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
         return false
       }
     }
@@ -552,11 +545,12 @@ const executeReplace = async () => {
       showReplaceForm.value = false
       replaceNewUrl.value = ''
     } else {
-      const failMsg = data.failures?.map((f: any) => `${f.sourceTitle || f.sourceName}: ${f.errorMessage}`).join('; ') || '未知错误'
+      const failMsg = data.failures?.map((f: { sourceTitle?: string; sourceName?: string; errorMessage?: string }) => `${f.sourceTitle || f.sourceName}: ${f.errorMessage}`).join('; ') || '未知错误'
       Toast.error(`替换失败：${failMsg}`)
     }
-  } catch (error: any) {
-    Toast.error('替换操作失败: ' + (error.response?.data?.message || error.message))
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { message?: string } }; message?: string }
+    Toast.error('替换操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
   } finally {
     replacing.value = false
   }
@@ -579,19 +573,6 @@ const pollScanStatus = () => {
     }
   }
   poll()
-}
-
-const changePage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value) {
-    page.value = newPage
-    fetchBrokenLinks()
-  }
-}
-
-const onPageSizeChange = () => {
-  page.value = 1
-  selectedUrls.value = []
-  fetchBrokenLinks()
 }
 
 const truncateUrl = (url: string): string => {
@@ -648,6 +629,13 @@ onUnmounted(() => {
   if (searchDebounceTimer.value) {
     clearTimeout(searchDebounceTimer.value)
   }
+})
+
+watch([page, pageSize], ([, newSize], [, oldSize]) => {
+  if (newSize !== oldSize) {
+    selectedUrls.value = []
+  }
+  fetchBrokenLinks()
 })
 </script>
 

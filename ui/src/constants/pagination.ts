@@ -1,7 +1,7 @@
 /**
  * 分页相关常量
  */
-export const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
+export const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
 export type PageSizeOption = typeof PAGE_SIZE_OPTIONS[number]
 
