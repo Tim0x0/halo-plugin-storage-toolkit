@@ -316,14 +316,20 @@ const isIndeterminate = computed(() => {
 const handleSearchDebounced = () => {
   clearTimeout(searchDebounceTimer.value)
   searchDebounceTimer.value = window.setTimeout(() => {
-    page.value = 1
-    fetchBrokenLinks()
+    if (page.value !== 1) {
+      page.value = 1
+    } else {
+      fetchBrokenLinks()
+    }
   }, 300)
 }
 
 const handleFilterChange = () => {
-  page.value = 1
-  fetchBrokenLinks()
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchBrokenLinks()
+  }
 }
 
 const toggleSelectAll = () => {
@@ -623,7 +629,10 @@ onUnmounted(() => {
   }
 })
 
-watch([page, pageSize], () => {
+watch([page, pageSize], ([, newSize], [, oldSize]) => {
+  if (newSize !== oldSize) {
+    selectedUrls.value = []
+  }
   fetchBrokenLinks()
 })
 </script>

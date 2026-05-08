@@ -289,15 +289,21 @@ let pollTimerRef: ReturnType<typeof setTimeout> | null = null
 const handleSearchDebounced = () => {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
-    page.value = 1
-    fetchReferences()
+    if (page.value !== 1) {
+      page.value = 1
+    } else {
+      fetchReferences()
+    }
   }, 300)
 }
 
 const handleFilterChange = () => {
-  page.value = 1
   selectedAttachments.value = []
-  fetchReferences()
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchReferences()
+  }
 }
 
 const toggleSelectAll = () => {
@@ -530,7 +536,10 @@ onUnmounted(() => {
   }
 })
 
-watch([page, pageSize], () => {
+watch([page, pageSize], ([, newSize], [, oldSize]) => {
+  if (newSize !== oldSize) {
+    selectedAttachments.value = []
+  }
   fetchReferences()
 })
 
@@ -541,6 +550,7 @@ watch(() => route.query.attachment, () => {
 
 
 <style scoped>
+
 .reference-tab {
   display: flex;
   flex-direction: column;

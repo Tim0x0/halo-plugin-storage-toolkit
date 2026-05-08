@@ -163,8 +163,11 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null
 const debouncedFetch = () => {
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
-    page.value = 1
-    fetchLogs()
+    if (page.value !== 1) {
+      page.value = 1
+    } else {
+      fetchLogs()
+    }
   }, 300)
 }
 
@@ -204,8 +207,11 @@ const handleRefresh = async () => {
 }
 
 const handleFilterChange = () => {
-  page.value = 1
-  fetchLogs()
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchLogs()
+  }
 }
 
 const handleClearAll = () => {

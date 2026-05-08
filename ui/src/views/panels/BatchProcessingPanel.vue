@@ -583,8 +583,11 @@ const clearResults = () => {
 const handleRefresh = () => {
   clearResults()
   selectedAttachments.value = []
-  page.value = 1
-  fetchAttachments()
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchAttachments()
+  }
 }
 
 // 选择操作
@@ -611,13 +614,19 @@ const toggleSelectAll = () => {
 const handleSearchDebounced = () => {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
-    page.value = 1
     selectedAttachments.value = []  // 搜索时清空选择
-    fetchAttachments()
+    if (page.value !== 1) {
+      page.value = 1
+    } else {
+      fetchAttachments()
+    }
   }, 300)
 }
 
-watch([page, pageSize], () => {
+watch([page, pageSize], ([, newSize], [, oldSize]) => {
+  if (newSize !== oldSize) {
+    selectedAttachments.value = []
+  }
   fetchAttachments()
 })
 
@@ -1035,11 +1044,6 @@ onUnmounted(() => {
   align-items: center;
   padding: 16px;
   border-top: 1px solid #f4f4f5;
-}
-
-.page-info {
-  font-size: 13px;
-  color: #71717a;
 }
 
 .page-controls {
