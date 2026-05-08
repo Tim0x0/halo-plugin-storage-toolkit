@@ -97,11 +97,11 @@
                 loading="lazy"
               />
               <span v-else class="file-icon">{{ getFileIcon(file.mediaType) }}</span>
-              <span class="file-name" @click="openPreview(file, group.fileSize)">{{ file.displayName }}</span>
-              <span class="group-badge">{{ file.groupDisplayName || '未分组' }}</span>
-              <span class="recommended-badge" v-if="file.recommended">推荐保留</span>
+              <span class="file-name" @click="openPreview(file, group.fileSize)" :title="file.displayName">{{ file.displayName }}</span>
             </div>
             <div class="file-meta">
+              <span class="group-badge" :title="file.groupDisplayName || '未分组'">{{ file.groupDisplayName || '未分组' }}</span>
+              <span class="recommended-badge" v-if="file.recommended">推荐保留</span>
               <span class="file-refs not-scanned" v-if="file.referenceCount < 0">
                 未扫描
               </span>
@@ -148,7 +148,7 @@
     <div class="modal-overlay" v-if="showPreview" @click.self="showPreview = false">
       <div class="modal-content">
         <div class="modal-header">
-          <h3>{{ previewFile?.displayName }}</h3>
+          <h3 :title="previewFile?.displayName">{{ previewFile?.displayName }}</h3>
           <button class="modal-close" @click="showPreview = false">×</button>
         </div>
         <div class="modal-body">
@@ -788,12 +788,16 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .file-checkbox {
   width: 16px;
   height: 16px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .file-checkbox:disabled {
@@ -801,7 +805,10 @@ onUnmounted(() => {
   opacity: 0.4;
 }
 
-.file-icon { font-size: 16px; }
+.file-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
 .file-thumb {
   width: 32px;
   height: 32px;
@@ -809,7 +816,12 @@ onUnmounted(() => {
   border-radius: 4px;
   flex-shrink: 0;
 }
-.file-name { font-size: 14px; color: #18181b; }
+.file-name {
+  font-size: 14px;
+  color: #18181b;
+  flex: 1;
+  min-width: 0;
+}
 
 .group-badge {
   font-size: 11px;
@@ -817,7 +829,11 @@ onUnmounted(() => {
   background: #f4f4f5;
   color: #71717a;
   border-radius: 4px;
-  margin-left: 8px;
+  flex-shrink: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .recommended-badge {
@@ -826,12 +842,14 @@ onUnmounted(() => {
   background: #059669;
   color: white;
   border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .file-meta {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .file-refs {
@@ -960,6 +978,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
   padding-right: 12px;
 }
 
@@ -1081,6 +1100,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
   transition: color 0.15s;
   cursor: pointer;
 }
@@ -1191,5 +1211,72 @@ onUnmounted(() => {
   gap: 10px;
   justify-content: flex-end;
   width: 100%;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-left {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .stats-row {
+    grid-template-columns: 1fr;
+  }
+
+  .file-item {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .file-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .file-meta {
+    width: 100%;
+    padding-left: 24px;
+    gap: 8px;
+  }
+
+  .group-badge {
+    max-width: 80px;
+  }
+
+  .group-info {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
+  }
+
+  .modal-content {
+    max-width: 95%;
+    margin: 10px;
+  }
+
+  .stat-num {
+    font-size: 18px;
+  }
+
+  .group-badge {
+    max-width: 80px;
+  }
 }
 </style>

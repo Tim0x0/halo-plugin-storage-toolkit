@@ -104,20 +104,21 @@
             >{{ tab.label }}</button>
           </div>
         </div>
-        <table class="data-table" v-if="currentData.length > 0">
+        <div class="table-wrapper" v-if="currentData.length > 0">
+        <table class="data-table">
           <thead>
             <tr>
-              <th>名称</th>
-              <th>文件数</th>
-              <th>存储大小</th>
-              <th>占比</th>
+              <th class="col-name">名称</th>
+              <th class="col-count">文件数</th>
+              <th class="col-size">存储大小</th>
+              <th class="col-percent">占比</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="item in currentData" :key="item.key">
-              <td>
+              <td class="col-name">
                 <span class="item-icon">{{ getIcon(item.icon) }}</span>
-                {{ item.name }}
+                <span class="table-name" :title="item.name">{{ item.name }}</span>
               </td>
               <td>{{ item.count.toLocaleString() }}</td>
               <td>{{ formatBytes(item.size) }}</td>
@@ -132,6 +133,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
         <div v-else class="no-data">暂无数据</div>
       </div>
     </template>
@@ -564,6 +566,10 @@ onBeforeUnmount(() => {
 
 .legend-name {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #374151;
 }
 
@@ -589,6 +595,9 @@ onBeforeUnmount(() => {
 .bar-label {
   font-size: 13px;
   color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bar-track {
@@ -650,7 +659,13 @@ onBeforeUnmount(() => {
 /* 表格 */
 .data-table {
   width: 100%;
+  min-width: 480px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 .data-table th,
@@ -670,6 +685,7 @@ onBeforeUnmount(() => {
 .data-table td {
   font-size: 14px;
   color: #18181b;
+  white-space: nowrap;
 }
 
 .data-table tbody tr:hover {
@@ -677,8 +693,25 @@ onBeforeUnmount(() => {
 }
 
 .item-icon {
-  margin-right: 8px;
+  flex-shrink: 0;
 }
+
+.col-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.col-count { width: 20%; }
+.col-size { width: 25%; }
+.col-percent { width: 25%; }
 
 .percent-cell {
   display: flex;
@@ -708,10 +741,13 @@ onBeforeUnmount(() => {
 }
 
 /* 响应式 */
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+@media (max-width: 768px) {
   .charts-grid {
     grid-template-columns: 1fr;
   }
@@ -720,6 +756,22 @@ onBeforeUnmount(() => {
   }
   .bar-row {
     grid-template-columns: 80px 1fr 70px;
+  }
+  .stat-value {
+    font-size: 20px;
+  }
+}
+
+@media (max-width: 640px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .stat-value {
+    font-size: 18px;
+  }
+  .data-table th,
+  .data-table td {
+    padding: 10px 12px;
   }
 }
 </style>

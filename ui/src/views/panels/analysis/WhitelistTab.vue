@@ -52,13 +52,14 @@
         </button>
       </div>
       <template v-else>
+        <div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
-              <th>URL</th>
-              <th>备注</th>
-              <th>匹配模式</th>
-              <th>添加时间</th>
+              <th class="col-url">URL</th>
+              <th class="col-note">备注</th>
+              <th class="col-pattern">匹配模式</th>
+              <th class="col-time">添加时间</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -81,6 +82,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
 
         <!-- 分页 -->
         <div class="pagination" v-if="totalPages > 1">
@@ -482,6 +484,12 @@ onMounted(() => {
 .data-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
+  min-width: 700px;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 .data-table th,
@@ -489,6 +497,7 @@ onMounted(() => {
   padding: 12px 16px;
   text-align: left;
   border-bottom: 1px solid #f0f0f0;
+  white-space: nowrap;
 }
 
 .data-table th {
@@ -496,6 +505,7 @@ onMounted(() => {
   font-weight: 600;
   color: #18181b;
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .data-table td {
@@ -506,12 +516,25 @@ onMounted(() => {
   background: #f9fafb;
 }
 
+/* 列宽 */
+.col-url { width: 36%; }
+.col-note { width: 16%; }
+.col-pattern { width: 12%; }
+.col-time { width: 24%; }
+
+/* 操作列 */
+.data-table th:last-child,
+.data-table td:last-child {
+  width: 60px;
+  text-align: center;
+}
+
 .cell-url {
-  max-width: 300px;
+  overflow: hidden;
 }
 
 .url-text {
-  display: inline-block;
+  display: block;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -832,5 +855,34 @@ onMounted(() => {
 .btn-modal-confirm:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .toolbar-left, .toolbar-right {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .search-input {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
+  }
+
+  .modal-content {
+    max-width: 95%;
+  }
 }
 </style>

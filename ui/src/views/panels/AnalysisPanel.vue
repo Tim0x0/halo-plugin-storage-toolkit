@@ -77,4 +77,19 @@ watch(activeTab, val => localStorage.setItem('storage-toolkit-analysis-sub-tab',
 .sub-content {
   min-height: 400px;
 }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .sub-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 640px) {
+  .sub-tab {
+    padding: 10px 4px;
+    font-size: 13px;
+  }
+}
 </style>

@@ -98,14 +98,14 @@
       <div class="log-list">
         <template v-if="logTab === 'failed'">
           <div class="log-item failed" v-for="item in lastResult.failedItems" :key="item.attachmentName">
-            <span class="log-name">{{ item.displayName }}</span>
-            <span class="log-reason">{{ item.error }}</span>
+            <span class="log-name" :title="item.displayName">{{ item.displayName }}</span>
+            <span class="log-reason" :title="item.error">{{ item.error }}</span>
           </div>
         </template>
         <template v-else>
           <div class="log-item skipped" v-for="item in lastResult.skippedItems" :key="item.attachmentName">
-            <span class="log-name">{{ item.displayName }}</span>
-            <span class="log-reason">{{ item.reason }}</span>
+            <span class="log-name" :title="item.displayName">{{ item.displayName }}</span>
+            <span class="log-reason" :title="item.reason">{{ item.reason }}</span>
           </div>
         </template>
       </div>
@@ -118,6 +118,7 @@
         没有符合条件的附件
       </div>
       <template v-else>
+        <div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
@@ -130,9 +131,9 @@
                   :disabled="processing"
                 />
               </th>
-              <th>文件名</th>
-              <th>类型</th>
-              <th>大小</th>
+              <th class="col-filename">文件名</th>
+              <th class="col-type">类型</th>
+              <th class="col-size">大小</th>
             </tr>
           </thead>
           <tbody>
@@ -159,13 +160,14 @@
                   @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
                 />
                 <span v-else class="file-icon">{{ getFileIcon(att.mediaType) }}</span>
-                <span class="file-name-text">{{ att.displayName }}</span>
+                <span class="file-name-text" :title="att.displayName">{{ att.displayName }}</span>
               </td>
               <td>{{ att.mediaType }}</td>
               <td>{{ formatBytes(att.size) }}</td>
             </tr>
           </tbody>
         </table>
+        </div>
 
         <!-- 分页 -->
         <div class="pagination" v-if="total > 0">
@@ -188,7 +190,7 @@
     <div class="modal-overlay" v-if="showPreview" @click.self="showPreview = false">
       <div class="modal-content">
         <div class="modal-header">
-          <h3>{{ previewAttachment?.displayName }}</h3>
+          <h3 :title="previewAttachment?.displayName">{{ previewAttachment?.displayName }}</h3>
           <button class="modal-close" @click="showPreview = false">×</button>
         </div>
         <div class="modal-body">
@@ -945,11 +947,21 @@ onUnmounted(() => {
 .log-name {
   font-size: 13px;
   color: #18181b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 
 .log-reason {
   font-size: 12px;
   color: #71717a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 50%;
 }
 
 /* 卡片和表格 */
@@ -970,7 +982,13 @@ onUnmounted(() => {
 
 .data-table {
   width: 100%;
+  min-width: 520px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 .data-table th, .data-table td {
@@ -991,6 +1009,10 @@ onUnmounted(() => {
   text-align: center;
 }
 
+.col-filename { width: 60%; }
+.col-type { width: 20%; }
+.col-size { width: 20%; }
+
 .col-checkbox input[type="checkbox"] {
   width: 16px;
   height: 16px;
@@ -1000,6 +1022,7 @@ onUnmounted(() => {
 .data-table td {
   font-size: 14px;
   color: #18181b;
+  white-space: nowrap;
 }
 
 .data-table tbody tr {
@@ -1024,6 +1047,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+  min-width: 0;
 }
 
 .cell-name:hover .file-name-text {
@@ -1048,6 +1072,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
   transition: color 0.15s;
 }
 
@@ -1149,6 +1174,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
   padding-right: 12px;
 }
 
@@ -1374,5 +1400,47 @@ onUnmounted(() => {
   gap: 10px;
   justify-content: flex-end;
   width: 100%;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-left, .toolbar-right {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .search-input {
+    width: 100%;
+  }
+
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
+  }
+
+  .modal-content {
+    max-width: 95%;
+    margin: 10px;
+  }
+
+  .stat-num {
+    font-size: 18px;
+  }
 }
 </style>

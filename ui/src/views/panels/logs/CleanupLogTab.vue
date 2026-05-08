@@ -53,49 +53,53 @@
         <div class="empty-text">暂无清理日志</div>
       </div>
 
-      <table v-else class="logs-table">
-        <thead>
-          <tr>
-            <th class="col-filename">文件名</th>
-            <th class="col-size">大小</th>
-            <th class="col-reason">删除原因</th>
-            <th class="col-operator">操作人</th>
-            <th class="col-time">删除时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="log in logs" :key="log.name">
-            <td class="col-filename">
-              <div class="filename" :title="log.displayName">{{ log.displayName }}</div>
-            </td>
-            <td class="col-size">{{ formatBytes(log.size || 0) }}</td>
-            <td class="col-reason">
-              <span :class="['reason-badge', getReasonClass(log.reason)]">
-                {{ getReasonLabel(log.reason) }}
-              </span>
-            </td>
-            <td class="col-operator">{{ log.operator || '-' }}</td>
-            <td class="col-time">{{ formatTime(log.deletedAt) }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- 分页 -->
-      <div class="pagination" v-if="total > 0">
-        <div class="page-info">共 {{ total }} 条</div>
-        <div class="page-controls">
-          <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">
-            上一页
-          </button>
-          <span class="page-num">{{ page }} / {{ totalPages }}</span>
-          <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">
-            下一页
-          </button>
+      <template v-else>
+        <div class="table-wrapper">
+          <table class="logs-table">
+            <thead>
+              <tr>
+                <th class="col-filename">文件名</th>
+                <th class="col-size">大小</th>
+                <th class="col-reason">删除原因</th>
+                <th class="col-operator">操作人</th>
+                <th class="col-time">删除时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="log in logs" :key="log.name">
+                <td class="col-filename">
+                  <div class="filename" :title="log.displayName">{{ log.displayName }}</div>
+                </td>
+                <td class="col-size">{{ formatBytes(log.size || 0) }}</td>
+                <td class="col-reason">
+                  <span :class="['reason-badge', getReasonClass(log.reason)]">
+                    {{ getReasonLabel(log.reason) }}
+                  </span>
+                </td>
+                <td class="col-operator">{{ log.operator || '-' }}</td>
+                <td class="col-time">{{ formatTime(log.deletedAt) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
-          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}条/页</option>
-        </select>
-      </div>
+
+        <!-- 分页 -->
+        <div class="pagination" v-if="total > 0">
+          <div class="page-info">共 {{ total }} 条</div>
+          <div class="page-controls">
+            <button type="button" class="page-btn" :disabled="page <= 1" @click="changePage(page - 1)">
+              上一页
+            </button>
+            <span class="page-num">{{ page }} / {{ totalPages }}</span>
+            <button type="button" class="page-btn" :disabled="page >= totalPages" @click="changePage(page + 1)">
+              下一页
+            </button>
+          </div>
+          <select v-model="pageSize" class="page-size" @change="handlePageSizeChange">
+            <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}条/页</option>
+          </select>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -290,8 +294,7 @@ onMounted(() => handleRefresh())
 .filter-input {
   flex: 1;
   max-width: 300px;
-  height: 38px;
-  padding: 0 12px;
+  padding: 8px 12px;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   font-size: 14px;
@@ -363,6 +366,10 @@ onMounted(() => handleRefresh())
   overflow: hidden;
 }
 
+.table-wrapper {
+  overflow-x: auto;
+}
+
 .loading-state,
 .empty-state {
   padding: 60px 20px;
@@ -385,6 +392,7 @@ onMounted(() => handleRefresh())
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+  min-width: 680px;
 }
 
 .logs-table th,
@@ -394,6 +402,7 @@ onMounted(() => handleRefresh())
   font-size: 14px;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: top;
+  white-space: nowrap;
 }
 
 .logs-table th {
@@ -408,17 +417,18 @@ onMounted(() => handleRefresh())
 }
 
 /* 列宽 */
-.col-filename { width: 35%; min-width: 180px; }
-.col-size { width: 85px; }
-.col-reason { width: 100px; }
-.col-operator { width: 100px; }
-.col-time { width: 150px; color: #999; font-size: 13px; }
+.col-filename { width: 34%; }
+.col-size { width: 13%; }
+.col-reason { width: 14%; }
+.col-operator { width: 12%; }
+.col-time { width: 27%; color: #999; font-size: 13px; }
 
 /* 文件名 */
 .filename {
   font-weight: 500;
-  word-break: break-all;
-  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 原因标签 */
@@ -509,10 +519,32 @@ onMounted(() => handleRefresh())
   }
   .filter-input {
     max-width: none;
+    width: 100%;
   }
   .filter-actions {
     margin-left: 0;
     justify-content: flex-end;
+  }
+}
+
+@media (max-width: 640px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .stat-value {
+    font-size: 18px;
+  }
+
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
   }
 }
 </style>
