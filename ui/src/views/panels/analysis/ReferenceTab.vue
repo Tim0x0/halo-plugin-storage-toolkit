@@ -76,6 +76,7 @@
         没有符合条件的附件
       </div>
       <template v-else>
+        <div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
@@ -87,14 +88,14 @@
                   @change="toggleSelectAll"
                 />
               </th>
-              <th>文件名</th>
-              <th>类型</th>
-              <th>大小</th>
-              <th class="sortable" @click="toggleSort('referenceCount')">
+              <th class="col-filename">文件名</th>
+              <th class="col-type">类型</th>
+              <th class="col-size">大小</th>
+              <th class="col-ref-count sortable" @click="toggleSort('referenceCount')">
                 引用次数
                 <span v-if="sortField === 'referenceCount'">{{ sortDesc ? '↓' : '↑' }}</span>
               </th>
-              <th>引用位置</th>
+              <th class="col-ref-location">引用位置</th>
             </tr>
           </thead>
           <tbody>
@@ -107,6 +108,7 @@
                 />
               </td>
               <td class="cell-name">
+                <div class="cell-name-inner">
                 <img
                   v-if="item.mediaType?.startsWith('image/') && item.permalink"
                   :src="utils.attachment.getThumbnailUrl(item.permalink, 'S')"
@@ -114,7 +116,8 @@
                   @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
                 />
                 <span v-else class="file-icon">{{ getFileIcon(item.mediaType) }}</span>
-                <span class="file-name-text" @click="showReferenceDetail(item)">{{ item.displayName }}</span>
+                <span class="file-name-text" @click="showReferenceDetail(item)" :title="item.displayName">{{ item.displayName }}</span>
+                </div>
               </td>
               <td>{{ item.mediaType }}</td>
               <td>{{ formatBytes(item.size) }}</td>
@@ -127,7 +130,7 @@
                   {{ item.referenceCount }}
                 </span>
               </td>
-              <td>
+              <td class="col-ref-location">
                 <div class="ref-locations" v-if="item.references && item.references.length > 0">
                   <span
                     :class="['location-tag', getSourceTypeClass(type)]"
@@ -143,6 +146,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
 
         <!-- 分页 -->
         <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
@@ -153,7 +157,7 @@
     <div class="modal-overlay" v-if="showDetailModal" @click.self="showDetailModal = false">
       <div class="modal-content">
         <div class="modal-header">
-          <h3>{{ selectedAttachment?.displayName }}</h3>
+          <h3 :title="selectedAttachment?.displayName">{{ selectedAttachment?.displayName }}</h3>
           <button class="modal-close" @click="showDetailModal = false">×</button>
         </div>
         <div class="modal-body">
@@ -723,13 +727,20 @@ watch(() => route.query.attachment, () => {
 
 .data-table {
   width: 100%;
+  min-width: 560px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 .data-table th, .data-table td {
   padding: 12px 16px;
   text-align: left;
   border-bottom: 1px solid #f4f4f5;
+  vertical-align: middle;
 }
 
 .data-table th {
@@ -737,6 +748,7 @@ watch(() => route.query.attachment, () => {
   font-weight: 500;
   color: #71717a;
   background: #fafafa;
+  white-space: nowrap;
 }
 
 .data-table th.sortable {
@@ -753,6 +765,12 @@ watch(() => route.query.attachment, () => {
   text-align: center;
 }
 
+.col-filename { width: 30%; }
+.col-type { width: 15%; }
+.col-size { width: 12%; }
+.col-ref-count { width: 14%; }
+.col-ref-location { width: 29%; }
+
 .col-checkbox input[type="checkbox"] {
   width: 16px;
   height: 16px;
@@ -762,6 +780,7 @@ watch(() => route.query.attachment, () => {
 .data-table td {
   font-size: 14px;
   color: #18181b;
+  white-space: nowrap;
 }
 
 .data-table tr.highlighted {
@@ -789,10 +808,15 @@ watch(() => route.query.attachment, () => {
 }
 
 .cell-name {
+  cursor: pointer;
+  min-width: 0;
+}
+
+.cell-name-inner {
   display: flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
+  min-width: 0;
 }
 
 .cell-name:hover .file-name-text {
@@ -803,6 +827,7 @@ watch(() => route.query.attachment, () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
   transition: color 0.15s;
 }
 
@@ -991,6 +1016,7 @@ watch(() => route.query.attachment, () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
   padding-right: 12px;
 }
 
@@ -1114,5 +1140,51 @@ watch(() => route.query.attachment, () => {
   object-fit: cover;
   border-radius: 4px;
   flex-shrink: 0;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-left, .toolbar-right {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .search-input {
+    width: 100%;
+  }
+
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .filter-hint {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
+  }
+
+  .modal-content {
+    max-width: 95%;
+    margin: 10px;
+  }
+
+  .stat-num {
+    font-size: 18px;
+  }
 }
 </style>

@@ -85,6 +85,7 @@
         <span class="empty-hint">所有媒体链接都有效</span>
       </div>
       <template v-else>
+        <div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
@@ -96,11 +97,11 @@
                   @change="toggleSelectAll"
                 />
               </th>
-              <th>断链 URL</th>
-              <th>来源位置</th>
-              <th>断链原因</th>
-              <th>发现时间</th>
-              <th class="sortable" @click="toggleSort('sourceCount')">
+              <th class="col-url-head">断链 URL</th>
+              <th class="col-source">来源位置</th>
+              <th class="col-reason">断链原因</th>
+              <th class="col-time">发现时间</th>
+              <th class="col-count sortable" @click="toggleSort('sourceCount')">
                 出现次数
                 <span v-if="sortField === 'sourceCount'">{{ sortDesc ? '↓' : '↑' }}</span>
               </th>
@@ -148,6 +149,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
 
         <!-- 分页 -->
         <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
@@ -780,7 +782,13 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
 
 .data-table {
   width: 100%;
+  min-width: 700px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+
+.table-wrapper {
+  overflow-x: auto;
 }
 
 .data-table th, .data-table td {
@@ -794,6 +802,7 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   font-weight: 500;
   color: #71717a;
   background: #fafafa;
+  white-space: nowrap;
 }
 
 .data-table th.sortable {
@@ -808,6 +817,7 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
 .data-table td {
   font-size: 14px;
   color: #18181b;
+  white-space: nowrap;
 }
 
 .data-table tbody tr:hover {
@@ -826,7 +836,6 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
 }
 
 .cell-url {
-  max-width: 300px;
   cursor: pointer;
 }
 
@@ -838,9 +847,19 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   font-family: monospace;
   font-size: 13px;
   color: #71717a;
-  word-break: break-all;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: color 0.15s;
 }
+
+/* 列宽 */
+.col-url-head { width: 34%; }
+.col-source { width: 14%; }
+.col-reason { width: 13%; }
+.col-time { width: 22%; }
+.col-count { width: 17%; }
 
 .source-locations {
   display: flex;
@@ -1265,5 +1284,44 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
 
 .replace-input-error:focus {
   border-color: #ef4444;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .toolbar-left, .toolbar-right {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .search-input {
+    width: 100%;
+  }
+
+  .filter-select {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
+  }
+
+  .modal-content {
+    max-width: 95%;
+    margin: 10px;
+  }
+
+  .stat-num {
+    font-size: 18px;
+  }
 }
 </style>

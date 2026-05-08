@@ -62,64 +62,68 @@
         <div class="empty-text">暂无替换日志</div>
       </div>
 
-      <table v-else class="logs-table">
-        <thead>
-          <tr>
-            <th class="col-url">URL</th>
-            <th class="col-type">内容类型</th>
-            <th class="col-title">内容标题</th>
-            <th class="col-ref-type">引用位置</th>
-            <th class="col-source">替换来源</th>
-            <th class="col-status">状态</th>
-            <th class="col-time">替换时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="log in logs" :key="log.name">
-            <td class="col-url">
-              <div class="url-original" :title="log.oldUrl">
-                {{ log.oldUrl }}
-              </div>
-              <div class="url-result" v-if="log.newUrl && log.success">
-                → {{ log.newUrl }}
-              </div>
-              <div class="error-msg" v-if="!log.success && log.errorMessage" :title="log.errorMessage">
-                {{ log.errorMessage }}
-              </div>
-            </td>
-            <td class="col-type">
-              <span :class="['type-badge', getSourceTypeClass(log.sourceType)]">
-                {{ getSourceTypeLabel(log.sourceType) }}
-              </span>
-            </td>
-            <td class="col-title">{{ log.sourceTitle || log.sourceName || '-' }}</td>
-            <td class="col-ref-type">
-              <div class="ref-type-tags" v-if="log.referenceType">
-                <span
-                  v-for="rt in log.referenceType.split(',')"
-                  :key="rt"
-                  class="ref-type-tag"
-                >{{ getReferenceTypeLabel(rt) }}</span>
-              </div>
-              <span v-else>-</span>
-            </td>
-            <td class="col-source">
-              <span :class="['source-badge', getSourceClass(log.source)]">
-                {{ getSourceLabel(log.source) }}
-              </span>
-            </td>
-            <td class="col-status">
-              <span :class="['status-badge', log.success ? 'status-success' : 'status-failed']">
-                {{ log.success ? '成功' : '失败' }}
-              </span>
-            </td>
-            <td class="col-time">{{ formatTime(log.replacedAt) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <template v-else>
+        <div class="table-wrapper">
+          <table class="logs-table">
+            <thead>
+              <tr>
+                <th class="col-url">URL</th>
+                <th class="col-type">内容类型</th>
+                <th class="col-title">内容标题</th>
+                <th class="col-ref-type">引用位置</th>
+                <th class="col-source">替换来源</th>
+                <th class="col-status">状态</th>
+                <th class="col-time">替换时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="log in logs" :key="log.name">
+                <td class="col-url">
+                  <div class="url-original" :title="log.oldUrl">
+                    {{ log.oldUrl }}
+                  </div>
+                  <div class="url-result" v-if="log.newUrl && log.success" :title="log.newUrl">
+                    → {{ log.newUrl }}
+                  </div>
+                  <div class="error-msg" v-if="!log.success && log.errorMessage" :title="log.errorMessage">
+                    {{ log.errorMessage }}
+                  </div>
+                </td>
+                <td class="col-type">
+                  <span :class="['type-badge', getSourceTypeClass(log.sourceType)]">
+                    {{ getSourceTypeLabel(log.sourceType) }}
+                  </span>
+                </td>
+                <td class="col-title" :title="log.sourceTitle || log.sourceName || ''">{{ log.sourceTitle || log.sourceName || '-' }}</td>
+                <td class="col-ref-type">
+                  <div class="ref-type-tags" v-if="log.referenceType">
+                    <span
+                      v-for="rt in log.referenceType.split(',')"
+                      :key="rt"
+                      class="ref-type-tag"
+                    >{{ getReferenceTypeLabel(rt) }}</span>
+                  </div>
+                  <span v-else>-</span>
+                </td>
+                <td class="col-source">
+                  <span :class="['source-badge', getSourceClass(log.source)]">
+                    {{ getSourceLabel(log.source) }}
+                  </span>
+                </td>
+                <td class="col-status">
+                  <span :class="['status-badge', log.success ? 'status-success' : 'status-failed']">
+                    {{ log.success ? '成功' : '失败' }}
+                  </span>
+                </td>
+                <td class="col-time">{{ formatTime(log.replacedAt) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
-      <!-- 分页 -->
-      <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
+        <!-- 分页 -->
+        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
+      </template>
     </div>
   </div>
 </template>
@@ -345,8 +349,7 @@ onMounted(() => handleRefresh())
 .filter-input {
   flex: 1;
   max-width: 300px;
-  height: 38px;
-  padding: 0 12px;
+  padding: 8px 12px;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   font-size: 14px;
@@ -418,6 +421,10 @@ onMounted(() => handleRefresh())
   overflow: hidden;
 }
 
+.table-wrapper {
+  overflow-x: auto;
+}
+
 .loading-state,
 .empty-state {
   padding: 60px 20px;
@@ -440,6 +447,7 @@ onMounted(() => handleRefresh())
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
+  min-width: 760px;
 }
 
 .logs-table th,
@@ -449,6 +457,7 @@ onMounted(() => handleRefresh())
   font-size: 14px;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: top;
+  white-space: nowrap;
 }
 
 .logs-table th {
@@ -463,27 +472,35 @@ onMounted(() => handleRefresh())
 }
 
 /* 列宽 */
-.col-url { width: 22%; min-width: 140px; }
-.col-type { width: 90px; }
-.col-title { width: 20%; min-width: 120px; }
-.col-ref-type { width: 120px; }
-.col-source { width: 90px; }
-.col-status { width: 70px; }
-.col-time { width: 150px; color: #999; font-size: 13px; }
+.col-url { width: 23%; }
+.col-type { width: 10%; }
+.col-title {
+  width: 16%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.col-ref-type { width: 12%; }
+.col-source { width: 10%; }
+.col-status { width: 9%; }
+.col-time { width: 20%; color: #999; font-size: 13px; }
 
 /* URL 列 */
 .url-original {
   font-size: 13px;
   font-weight: 500;
-  word-break: break-all;
-  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .url-result {
   font-size: 12px;
   color: #10b981;
   margin-top: 4px;
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error-msg {
@@ -674,10 +691,32 @@ onMounted(() => handleRefresh())
   }
   .filter-input {
     max-width: none;
+    width: 100%;
   }
   .filter-actions {
     margin-left: 0;
     justify-content: flex-end;
+  }
+}
+
+@media (max-width: 640px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .stat-value {
+    font-size: 18px;
+  }
+
+  .pagination {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .page-info {
+    width: 100%;
+    text-align: center;
   }
 }
 </style>

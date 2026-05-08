@@ -76,4 +76,19 @@ watch(activeTab, val => localStorage.setItem('storage-toolkit-logs-sub-tab', val
 .tab-content {
   flex: 1;
 }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .tab-nav {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 640px) {
+  .tab-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+}
 </style>

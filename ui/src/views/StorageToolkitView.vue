@@ -160,4 +160,27 @@ watch(() => route.query.tab, (newTab) => {
 .toolkit-main {
   min-height: calc(100vh - 180px);
 }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .toolkit-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .toolkit-body {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  .tab-btn {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .tab-icon {
+    display: none;
+  }
+}
 </style>
