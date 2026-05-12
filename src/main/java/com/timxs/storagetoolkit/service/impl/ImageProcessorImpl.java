@@ -108,7 +108,8 @@ public class ImageProcessorImpl implements ImageProcessor {
     /**
      * 获取跳过处理的原因
      * 注意：格式、是否启用、是否有处理功能等检查已在 WebFilter 中提前完成
-     * 此方法仅检查文件大小相关条件
+     * 文件大小检查在 WebFilter 上传流程中已由前置 Content-Length 检查覆盖，
+     * 但批量处理（BatchProcessingService）不经过 WebFilter，仍需此方法检查大小。
      *
      * @param contentType 文件 MIME 类型
      * @param fileSize    文件大小
@@ -123,7 +124,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             return "文件大小 " + formatFileSize(fileSize) + " 小于最小限制 " + formatFileSize(minFileSize);
         }
 
-        // 检查最大文件大小（兜底，Content-Length 可能为 -1）
+        // 检查最大文件大小
         long maxFileSize = config.getMaxFileSize();
         if (maxFileSize > 0 && fileSize > maxFileSize) {
             return "文件大小 " + formatFileSize(fileSize) + " 大于最大限制 " + formatFileSize(maxFileSize);

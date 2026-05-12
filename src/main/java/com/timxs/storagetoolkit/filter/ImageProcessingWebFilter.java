@@ -38,6 +38,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Semaphore;
+import java.util.function.Supplier;
 
 /**
  * 图片处理 WebFilter
@@ -119,6 +120,15 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     @Override
     @NonNull
     public Mono<Void> filter(@NonNull ServerWebExchange exchange, @NonNull WebFilterChain chain) {
+        // 先路径匹配，确认是上传请求后再做前置检查（避免对所有请求读配置）
+        return doFilter(exchange, chain);
+    }
+
+    /**
+     * 前置检查 + 路径匹配 + 请求处理
+     * 先基于配置和 Content-Length 做前置过滤，不读取 body
+     */
+    private Mono<Void> doFilter(ServerWebExchange exchange, WebFilterChain chain) {
         return consoleEditorMatcher.matches(exchange)
             .filter(ServerWebExchangeMatcher.MatchResult::isMatch)
             .switchIfEmpty(
@@ -130,11 +140,51 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                         attachmentManagerMatcher.matches(exchange)
                             .filter(ServerWebExchangeMatcher.MatchResult::isMatch)
                             .switchIfEmpty(chain.filter(exchange).then(Mono.empty()))
-                            .flatMap(match -> processAttachmentManagerRequest(exchange, chain).then(Mono.empty()))
+                            .flatMap(match -> preCheckAndProcess(exchange, chain,
+                                () -> processAttachmentManagerRequest(exchange, chain)).then(Mono.empty()))
                     )
-                    .flatMap(match -> processEditorRequest(exchange, chain, ProcessingSource.UC_EDITOR).then(Mono.empty()))
+                    .flatMap(match -> preCheckAndProcess(exchange, chain,
+                        () -> processEditorRequest(exchange, chain, ProcessingSource.UC_EDITOR)).then(Mono.empty()))
             )
-            .flatMap(match -> processEditorRequest(exchange, chain, ProcessingSource.CONSOLE_EDITOR).then(Mono.empty()));
+            .flatMap(match -> preCheckAndProcess(exchange, chain,
+                () -> processEditorRequest(exchange, chain, ProcessingSource.CONSOLE_EDITOR)).then(Mono.empty()));
+    }
+
+    /**
+     * 前置检查：基于配置和 Content-Length 判断是否需要处理，不读取 body
+     * 通过后委托给实际的处理方法
+     */
+    private Mono<Void> preCheckAndProcess(ServerWebExchange exchange, WebFilterChain chain,
+                                           Supplier<Mono<Void>> processor) {
+        long contentLength = exchange.getRequest().getHeaders().getContentLength();
+        if (contentLength <= 0) {
+            // Content-Length = -1（未知），直接放行不处理
+            return chain.filter(exchange);
+        }
+        return settingsManager.getConfig().flatMap(config -> {
+            // 插件未启用 → 放行
+            if (!config.isEnabled()) {
+                return chain.filter(exchange);
+            }
+            // 没有任何处理功能启用（水印/格式转换都未开）→ 放行
+            if (!imageProcessor.hasProcessingEnabled(config)) {
+                return chain.filter(exchange);
+            }
+            long minFileSize = config.getMinFileSize();
+            long maxFileSize = config.getMaxFileSize();
+            // 小于最小限制 → 放行（不处理）
+            if (minFileSize > 0 && contentLength < minFileSize) {
+                log.debug("Content-Length {} < minFileSize {}, skip processing", contentLength, minFileSize);
+                return chain.filter(exchange);
+            }
+            // 大于最大限制 → 放行（不处理）
+            if (maxFileSize > 0 && contentLength > maxFileSize) {
+                log.debug("Content-Length {} > maxFileSize {}, skip processing", contentLength, maxFileSize);
+                return chain.filter(exchange);
+            }
+            // 通过前置检查，进入处理流程
+            return processor.get();
+        });
     }
 
     /**
@@ -144,10 +194,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     private Mono<Void> processEditorRequest(ServerWebExchange exchange, WebFilterChain chain, ProcessingSource source) {
         return settingsManager.getConfig()
             .flatMap(config -> {
-                if (!config.isEnabled()) {
-                    log.debug("Image processing disabled globally");
-                    return chain.filter(exchange);
-                }
+                // isEnabled 已在前置检查中判断
                 if (!config.isProcessEditorImages()) {
                     log.debug("Editor image processing disabled");
                     return chain.filter(exchange);
@@ -188,14 +235,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 String filename = filePart.filename();
                 String contentType = getContentType(filePart);
 
-                // 检查是否有任何处理功能启用
-                if (!imageProcessor.hasProcessingEnabled(config)) {
-                    log.debug("No processing enabled, skip: {}", filename);
-                    // 重建请求传递下游（multipart 数据已被读取）
-                    return filePart.content().collectList()
-                        .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
-                        .flatMap(chain::filter);
-                }
+                // hasProcessingEnabled 已在前置检查中判断
 
                 // 检查是否是允许处理的格式，不是则传递下游
                 if (!imageProcessor.isAllowedFormat(contentType, config)) {
@@ -216,9 +256,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
     private Mono<Void> processAttachmentManagerRequest(ServerWebExchange exchange, WebFilterChain chain) {
         return settingsManager.getConfig()
             .flatMap(config -> {
-                if (!config.isEnabled()) {
-                    return chain.filter(exchange);
-                }
+                // isEnabled 已在前置检查中判断
                 return processRequest(exchange, chain, ProcessingSource.ATTACHMENT_MANAGER, config);
             });
     }
@@ -246,13 +284,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
 
                 String fileContentType = getContentType(filePart);
 
-                // 检查是否有任何处理功能启用
-                if (!imageProcessor.hasProcessingEnabled(config)) {
-                    log.debug("No processing enabled, skip: {}", filePart.filename());
-                    return filePart.content().collectList()
-                        .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
-                        .flatMap(chain::filter);
-                }
+                // hasProcessingEnabled 已在前置检查中判断
 
                 // 检查是否是允许处理的格式
                 if (!imageProcessor.isAllowedFormat(fileContentType, config)) {
@@ -277,7 +309,8 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
 
     /**
      * 执行图片处理核心逻辑（编辑器上传和附件管理共用）
-     * 包含：大小检查 → 信号量控制 → 图片处理 → 结果分发
+     * 包含：信号量控制 → 图片处理 → 结果分发
+     * 注意：文件大小检查已在 filter() 前置阶段基于 Content-Length 完成
      */
     private Mono<Void> doProcessImage(ServerWebExchange exchange, WebFilterChain chain,
                                        MultiValueMap<String, Part> parts, FilePart filePart,
@@ -285,20 +318,6 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
         String filename = filePart.filename();
         String contentType = getContentType(filePart);
         Instant startTime = Instant.now();
-
-        // 提前检查 Content-Length，大文件直接跳过处理
-        long contentLength = filePart.headers().getContentLength();
-        long maxFileSize = config.getMaxFileSize();
-        if (maxFileSize > 0 && contentLength > 0 && contentLength > maxFileSize) {
-            log.debug("File size {} exceeds max limit {}, skip processing: {}",
-                contentLength, maxFileSize, filename);
-            saveSkippedLog(filename, contentType, contentLength, startTime,
-                "文件大小超过限制（提前检查）", source);
-            // 传递下游处理
-            return filePart.content().collectList()
-                .flatMap(buffers -> decorateExchange(exchange, parts, filePart, Flux.fromIterable(buffers)))
-                .flatMap(chain::filter);
-        }
 
         // 获取处理许可，限制并发数
         // 注意：必须在 acquire 时保存 Semaphore 引用，确保 release 同一个对象
@@ -314,18 +333,6 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                     dataBuffer.read(imageData);
                     DataBufferUtils.release(dataBuffer);
                     long originalSize = imageData.length;
-
-                    // 二次校验文件大小（Content-Length 可能为 -1 被绕过）
-                    if (maxFileSize > 0 && originalSize > maxFileSize) {
-                        log.debug("File size {} exceeds max limit {}, skip processing: {}",
-                            originalSize, maxFileSize, filename);
-                        saveSkippedLog(filename, contentType, originalSize, startTime,
-                            "文件大小超过限制", source);
-                        // 用原图数据重建请求，传递下游
-                        DataBuffer buffer = bufferFactory.wrap(imageData);
-                        return decorateExchange(exchange, parts, filePart, Flux.just(buffer))
-                            .flatMap(chain::filter);
-                    }
 
                     String skipReason = imageProcessor.getSkipReason(contentType, originalSize, config);
                     if (skipReason != null) {

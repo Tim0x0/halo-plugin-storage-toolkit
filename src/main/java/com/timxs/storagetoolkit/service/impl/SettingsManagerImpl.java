@@ -136,7 +136,8 @@ public class SettingsManagerImpl implements SettingsManager {
                     config.setAllowedFormats(formats != null ? formats : List.of());
                     // 文件大小单位是 KB，需要转换为字节
                     long minSize = getLong(fileFilter, "minFileSize", 0) * 1024;
-                    long maxSize = getLong(fileFilter, "maxFileSize", 0) * 1024;
+                    // maxFileSize 默认 20MB（20480 KB），防止大文件 OOM
+                    long maxSize = getLong(fileFilter, "maxFileSize", 20480) * 1024;
                     config.setMinFileSize(minSize);
                     config.setMaxFileSize(maxSize);
                     log.debug("文件大小过滤配置 - minFileSize: {} KB, maxFileSize: {} KB", minSize / 1024, maxSize / 1024);
