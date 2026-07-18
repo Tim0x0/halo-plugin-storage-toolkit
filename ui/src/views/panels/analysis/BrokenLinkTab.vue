@@ -1,28 +1,24 @@
 <template>
   <div class="broken-link-tab">
     <!-- 操作栏 -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <button class="btn-scan" @click="startScan" :disabled="scanning">
-          <span v-if="scanning">扫描中...</span>
-          <span v-else>扫描断链</span>
-        </button>
-        <button class="btn-clear" @click="clearRecords" :disabled="scanning || !stats.lastScanTime">
+    <div class="st-toolbar">
+      <div class="st-toolbar-left">
+        <VButton type="secondary" :loading="scanning" @click="startScan">扫描断链</VButton>
+        <VButton type="danger" ghost :disabled="scanning || !stats.lastScanTime" @click="clearRecords">
           清空记录
-        </button>
-        <button
-          class="btn-ignore"
-          @click="ignoreSelected"
-          :disabled="selectedUrls.length === 0"
+        </VButton>
+        <VButton
           v-if="brokenLinks.length > 0"
+          :disabled="selectedUrls.length === 0"
+          @click="ignoreSelected"
         >
           忽略选中 ({{ selectedUrls.length }})
-        </button>
+        </VButton>
         <span class="scan-info" v-if="stats.lastScanTime && !scanning">上次扫描：{{ formatTime(stats.lastScanTime) }}</span>
         <span class="scan-info error" v-else-if="stats.phase === 'ERROR'">扫描失败：{{ stats.errorMessage }}</span>
       </div>
-      <div class="toolbar-right">
-        <select v-model="filterSourceType" class="filter-select" @change="handleFilterChange">
+      <div class="st-toolbar-right">
+        <select v-model="filterSourceType" class="st-select" @change="handleFilterChange">
           <option value="">全部来源</option>
           <option value="Post">文章</option>
           <option value="SinglePage">页面</option>
@@ -36,119 +32,118 @@
           <option value="ThemeSetting">主题设置</option>
           <option value="User">用户</option>
         </select>
-        <select v-model="filterReason" class="filter-select" @change="handleFilterChange">
+        <select v-model="filterReason" class="st-select" @change="handleFilterChange">
           <option value="">全部类型</option>
           <option value="HTTP_ERROR">HTTP 错误</option>
           <option value="HTTP_TIMEOUT">请求超时</option>
           <option value="CONNECTION_FAILED">连接失败</option>
           <option value="ATTACHMENT_NOT_FOUND">附件库丢失</option>
         </select>
-        <input
-          type="text"
-          v-model="searchKeyword"
-          placeholder="搜索URL或标题..."
-          class="search-input"
-          @input="handleSearchDebounced"
-        />
+        <SearchInput v-model="searchKeyword" placeholder="搜索URL或标题..." @search="handleFilterChange" />
       </div>
     </div>
 
     <!-- 提示 -->
-    <div class="notice info">
-      <span class="notice-icon">💡</span>
-      <span>扫描内容中引用了不存在附件的链接，与引用统计使用相同的扫描配置</span>
-    </div>
+    <VAlert
+      type="info"
+      description="扫描内容中引用了不存在附件的链接，与引用统计使用相同的扫描配置"
+    />
 
     <!-- 统计 -->
     <div class="stats-row">
-      <div class="stat-box">
-        <span class="stat-num">{{ stats.checkedLinkCount }}</span>
-        <span class="stat-text">检查链接数</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num red">{{ stats.brokenLinkCount }}</span>
-        <span class="stat-text">断链数</span>
-      </div>
+      <StatCard label="检查链接数" :value="stats.checkedLinkCount" />
+      <StatCard label="断链数" :value="stats.brokenLinkCount" tone="error" />
     </div>
 
     <!-- 断链列表 -->
-    <div class="card">
-      <div v-if="loading" class="loading-state">加载中...</div>
-      <div v-else-if="!stats.lastScanTime && !scanning" class="empty-state">
-        <span class="empty-icon">🔗</span>
-        <span class="empty-text">尚未进行扫描</span>
-        <span class="empty-hint">点击「扫描断链」开始检测</span>
-      </div>
-      <div v-else-if="brokenLinks.length === 0" class="empty-state">
-        <span class="empty-icon">✨</span>
-        <span class="empty-text">没有发现断链</span>
-        <span class="empty-hint">所有媒体链接都有效</span>
-      </div>
+    <div class="st-card">
+      <VLoading v-if="loading" />
+
+      <VEmpty
+        v-else-if="!stats.lastScanTime && !scanning"
+        title="尚未进行扫描"
+        message="点击「扫描断链」开始检测"
+      >
+        <template #actions>
+          <VButton type="secondary" :loading="scanning" @click="startScan">扫描断链</VButton>
+        </template>
+      </VEmpty>
+
+      <VEmpty
+        v-else-if="brokenLinks.length === 0"
+        title="没有发现断链"
+        message="所有媒体链接都有效"
+      />
+
       <template v-else>
-        <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th class="col-checkbox">
-                <input
-                  type="checkbox"
-                  :checked="isAllSelected"
-                  :indeterminate="isIndeterminate"
-                  @change="toggleSelectAll"
-                />
-              </th>
-              <th class="col-url-head">断链 URL</th>
-              <th class="col-source">来源位置</th>
-              <th class="col-reason">断链原因</th>
-              <th class="col-time">发现时间</th>
-              <th class="col-count sortable" @click="toggleSort('sourceCount')">
-                出现次数
-                <span v-if="sortField === 'sourceCount'">{{ sortDesc ? '↓' : '↑' }}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="link in brokenLinks" :key="link.url">
-              <td class="col-checkbox">
-                <input
-                  type="checkbox"
-                  :checked="selectedUrls.includes(link.url)"
-                  @change="toggleSelect(link.url)"
-                />
-              </td>
-              <td class="cell-url" @click="showDetail(link)">
-                <span class="url-text" :title="link.originalUrl || link.url">{{ truncateUrl(link.originalUrl || link.url) }}</span>
-              </td>
-              <td>
-                <div class="source-locations">
+        <div class="st-table-wrapper">
+          <table class="st-table broken-table">
+            <thead>
+              <tr>
+                <th class="col-checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="isAllSelected"
+                    :indeterminate="isIndeterminate"
+                    @change="toggleSelectAll"
+                  />
+                </th>
+                <th class="col-url-head">断链 URL</th>
+                <th class="col-source">来源位置</th>
+                <th class="col-reason">断链原因</th>
+                <th class="col-time">发现时间</th>
+                <th class="col-count st-th--sortable" @click="toggleSort('sourceCount')">
+                  出现次数
+                  <span v-if="sortField === 'sourceCount'">{{ sortDesc ? '↓' : '↑' }}</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="link in brokenLinks"
+                :key="link.url"
+                :class="{ 'st-table-row--selected': selectedUrls.includes(link.url) }"
+              >
+                <td class="col-checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="selectedUrls.includes(link.url)"
+                    @change="toggleSelect(link.url)"
+                  />
+                </td>
+                <td class="cell-url" @click="showDetail(link)">
+                  <span class="url-text" :title="link.originalUrl || link.url">{{ truncateUrl(link.originalUrl || link.url) }}</span>
+                </td>
+                <td>
+                  <div class="source-locations">
+                    <span
+                      :class="['st-tag', getSourceTypeClass(type)]"
+                      v-for="type in getUniqueSourceTypes(link.sources)"
+                      :key="type"
+                      :title="getSourceTypeLabel(type)"
+                    >
+                      {{ getSourceTypeLabel(type) }}
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  <StatusBadge :tone="getReasonTone(link.reason)">
+                    {{ getReasonLabel(link.reason) }}
+                  </StatusBadge>
+                </td>
+                <td class="col-time">{{ formatTime(link.discoveredAt) }}</td>
+                <td>
                   <span
-                    :class="['st-tag', getSourceTypeClass(type)]"
-                    v-for="type in getUniqueSourceTypes(link.sources)"
-                    :key="type"
-                    :title="getSourceTypeLabel(type)"
+                    class="source-count"
+                    @click="showDetail(link)"
+                    :title="'点击查看详情'"
                   >
-                    {{ getSourceTypeLabel(type) }}
+                    {{ link.sourceCount }}
                   </span>
-                </div>
-              </td>
-              <td>
-                <span :class="['reason-tag', getReasonClass(link.reason)]">
-                  {{ getReasonLabel(link.reason) }}
-                </span>
-              </td>
-              <td>{{ formatTime(link.discoveredAt) }}</td>
-              <td>
-                <span
-                  class="source-count"
-                  @click="showDetail(link)"
-                  :title="'点击查看详情'"
-                >
-                  {{ link.sourceCount }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
         <!-- 分页 -->
@@ -156,81 +151,21 @@
       </template>
     </div>
 
-    <!-- 详情对话框 -->
-    <div class="modal-overlay" v-if="showDetailModal" @click.self="showDetailModal = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>断链详情</h3>
-          <button class="modal-close" @click="showDetailModal = false">×</button>
-        </div>
-        <div class="modal-body">
-          <!-- 断链信息 -->
-          <div class="info-section">
-            <div class="info-item">
-              <span class="info-label">断链 URL</span>
-              <span class="info-value info-url">{{ selectedLink?.originalUrl || selectedLink?.url }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">断链原因</span>
-              <span class="info-value">
-                <span :class="['reason-tag', getReasonClass(selectedLink?.reason)]">
-                  {{ getReasonLabel(selectedLink?.reason) }}
-                </span>
-              </span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">发现时间</span>
-              <span class="info-value">{{ formatTime(selectedLink?.discoveredAt || '') }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">出现次数</span>
-              <span class="info-value">{{ selectedLink?.sourceCount }} 处</span>
-            </div>
-          </div>
-
-          <!-- 来源列表 -->
-          <ReferenceList
-            :references="selectedLink?.sources"
-            title="来源位置"
-          />
-
-          <!-- 替换区域 -->
-          <div class="replace-section">
-            <div class="replace-header" @click="showReplaceForm = !showReplaceForm; replaceInputError = false">
-              <span class="replace-toggle">{{ showReplaceForm ? '▼' : '▶' }}</span>
-              <span class="replace-title">替换为新 URL</span>
-            </div>
-            <div class="replace-form" v-if="showReplaceForm">
-              <input
-                type="text"
-                ref="replaceInputRef"
-                v-model="replaceNewUrl"
-                placeholder="输入新 URL"
-                :class="['replace-input', { 'replace-input-error': replaceInputError }]"
-                @input="replaceInputError = false"
-              />
-            </div>
-          </div>
-
-          <!-- 操作区域 -->
-          <div class="action-section">
-            <button class="btn-action-ignore" @click="ignoreSingle(selectedLink)">
-              添加到忽略白名单
-            </button>
-            <button class="btn-action-replace" @click="handleReplaceClick" :disabled="replacing">
-              {{ replacing ? '替换中...' : '替换 URL' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- 详情弹窗 -->
+    <BrokenLinkDetailModal
+      v-if="showDetailModal"
+      :link="selectedLink"
+      @close="showDetailModal = false"
+      @whitelisted="handleWhitelisted"
+      @replaced="handleReplaced"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatTime } from '@/utils/format'
@@ -239,7 +174,11 @@ import {
   getSourceTypeClass,
   getUniqueSourceTypes
 } from '@/composables'
-import ReferenceList from '@/components/ReferenceList.vue'
+import StatCard from '@/components/StatCard.vue'
+import StatusBadge from '@/components/StatusBadge.vue'
+import SearchInput from '@/components/SearchInput.vue'
+import BrokenLinkDetailModal from '@/views/panels/components/BrokenLinkDetailModal.vue'
+import type { BadgeTone } from '@/types/ui'
 
 interface BrokenLinkStats {
   phase: 'SCANNING' | 'COMPLETED' | 'ERROR' | null
@@ -296,14 +235,6 @@ const selectedUrls = ref<string[]>([])
 const sortField = ref('sourceCount')
 const sortDesc = ref(true)
 
-// 替换相关状态
-const showReplaceForm = ref(false)
-const replaceNewUrl = ref('')
-const replacing = ref(false)
-const replaceInputError = ref(false)
-const replaceInputRef = ref<HTMLInputElement | null>(null)
-
-const searchDebounceTimer = ref<number>()
 const pollTimer = ref<number>()
 
 const isAllSelected = computed(() => {
@@ -314,17 +245,6 @@ const isAllSelected = computed(() => {
 const isIndeterminate = computed(() => {
   return selectedUrls.value.length > 0 && !isAllSelected.value
 })
-
-const handleSearchDebounced = () => {
-  clearTimeout(searchDebounceTimer.value)
-  searchDebounceTimer.value = window.setTimeout(() => {
-    if (page.value !== 1) {
-      page.value = 1
-    } else {
-      fetchBrokenLinks()
-    }
-  }, 300)
-}
 
 const handleFilterChange = () => {
   if (page.value !== 1) {
@@ -466,94 +386,22 @@ const ignoreSelected = () => {
   })
 }
 
-// 单个忽略
-const ignoreSingle = async (link: BrokenLinkVo | null) => {
-  if (!link) return
-  const whitelistUrl = link.originalUrl || link.url
-
-  Dialog.warning({
-    title: '确认忽略',
-    description: `确定要将此 URL 添加到忽略白名单吗？此 URL 将不再被标记为断链。`,
-    confirmText: '确定忽略',
-    cancelText: '取消',
-    async onConfirm() {
-      try {
-        await axiosInstance.post(API_ENDPOINTS.WHITELIST_BATCH, { urls: [whitelistUrl] })
-        Toast.success('已添加到忽略白名单')
-        showDetailModal.value = false
-        // 从列表中移除
-        brokenLinks.value = brokenLinks.value.filter(item => item.url !== link.url)
-        total.value = Math.max(0, total.value - 1)
-        return true
-      } catch (error: unknown) {
-        const err = error as { response?: { data?: { message?: string } }; message?: string }
-        Toast.error('操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
-        return false
-      }
-    }
-  })
+// 详情弹窗：单个忽略后移除列表项
+const handleWhitelisted = (url: string) => {
+  brokenLinks.value = brokenLinks.value.filter(item => item.url !== url)
+  total.value = Math.max(0, total.value - 1)
+  showDetailModal.value = false
 }
 
-// 处理替换按钮点击
-const handleReplaceClick = () => {
-  if (replaceNewUrl.value.trim()) {
-    // URL 已填写，直接执行替换
-    executeReplace()
+// 详情弹窗：替换成功后移除列表项（部分成功则刷新）
+const handleReplaced = (payload: { url: string; refetch: boolean }) => {
+  if (payload.refetch) {
+    fetchBrokenLinks()
   } else {
-    // URL 为空，展开表单并标红
-    showReplaceForm.value = true
-    replaceInputError.value = true
-    // 等待 DOM 更新后聚焦输入框
-    setTimeout(() => {
-      replaceInputRef.value?.focus()
-    }, 50)
+    brokenLinks.value = brokenLinks.value.filter(item => item.url !== payload.url)
+    total.value = Math.max(0, total.value - 1)
   }
-}
-
-// 执行断链替换
-const executeReplace = async () => {
-  if (!selectedLink.value || !replaceNewUrl.value) return
-
-  const oldUrl = selectedLink.value.url
-  const newUrl = replaceNewUrl.value.trim()
-
-  if (!newUrl) {
-    Toast.warning('请输入新 URL')
-    return
-  }
-
-  replacing.value = true
-  try {
-    const { data } = await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_REPLACE, {
-      oldUrl,
-      newUrl
-    })
-
-    if (data.allSuccess) {
-      Toast.success(`替换成功，共 ${data.successCount} 处`)
-      showDetailModal.value = false
-      showReplaceForm.value = false
-      replaceNewUrl.value = ''
-      // 从列表中移除
-      brokenLinks.value = brokenLinks.value.filter(item => item.url !== oldUrl)
-      total.value = Math.max(0, total.value - 1)
-    } else if (data.successCount > 0) {
-      Toast.warning(`部分替换成功：${data.successCount} 成功，${data.failedCount} 失败`)
-      // 刷新列表
-      await fetchBrokenLinks()
-      showDetailModal.value = false
-      showReplaceForm.value = false
-      replaceNewUrl.value = ''
-    } else {
-      const failMsg = data.failures?.map((f: { sourceTitle?: string; sourceName?: string; errorMessage?: string }) => `${f.sourceTitle || f.sourceName}: ${f.errorMessage}`).join('; ') || '未知错误'
-      Toast.error(`替换失败：${failMsg}`)
-    }
-  } catch (error: unknown) {
-    const err = error as { response?: { data?: { message?: string } }; message?: string }
-    Toast.error('替换操作失败: ' + (err.response?.data?.message || err.message || '未知错误'))
-  } finally {
-    replacing.value = false
-  }
+  showDetailModal.value = false
 }
 
 // 轮询扫描状态
@@ -583,9 +431,6 @@ const truncateUrl = (url: string): string => {
 const showDetail = (link: BrokenLinkVo) => {
   selectedLink.value = link
   showDetailModal.value = true
-  showReplaceForm.value = false
-  replaceNewUrl.value = ''
-  replaceInputError.value = false
 }
 
 const getReasonLabel = (reason: string | undefined): string => {
@@ -600,16 +445,16 @@ const getReasonLabel = (reason: string | undefined): string => {
   return map[reason] ?? reason
 }
 
-const getReasonClass = (reason: string | undefined): string => {
-  if (!reason) return 'tag-gray'
-  // HTTP 状态码（如 "HTTP 403"、"HTTP 404"）统一使用红色
-  if (reason.startsWith('HTTP ')) return 'tag-red'
-  const map: Record<string, string> = {
-    'HTTP_TIMEOUT': 'tag-orange',
-    'CONNECTION_FAILED': 'tag-orange',
-    'ATTACHMENT_NOT_FOUND': 'tag-amber'
+// 断链原因语义色：HTTP 错误类 → error，超时/连接/附件丢失 → warning
+const getReasonTone = (reason: string | undefined): BadgeTone => {
+  if (!reason) return 'neutral'
+  if (reason.startsWith('HTTP ')) return 'error'
+  const map: Record<string, BadgeTone> = {
+    'HTTP_TIMEOUT': 'warning',
+    'CONNECTION_FAILED': 'warning',
+    'ATTACHMENT_NOT_FOUND': 'warning'
   }
-  return map[reason] ?? 'tag-gray'
+  return map[reason] ?? 'neutral'
 }
 
 onMounted(async () => {
@@ -625,9 +470,6 @@ onMounted(async () => {
 onUnmounted(() => {
   if (pollTimer.value) {
     clearTimeout(pollTimer.value)
-  }
-  if (searchDebounceTimer.value) {
-    clearTimeout(searchDebounceTimer.value)
   }
 })
 
@@ -646,182 +488,31 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   gap: 16px;
 }
 
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.toolbar-left, .toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.btn-scan {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #18181b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.btn-scan:disabled { background: #a1a1aa; cursor: not-allowed; }
-
-.btn-clear {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: white;
-  color: #dc2626;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-clear:hover:not(:disabled) {
-  background: #fef2f2;
-  border-color: #f87171;
-}
-
-.btn-clear:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-ignore {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #f59e0b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-ignore:hover:not(:disabled) {
-  background: #d97706;
-}
-
-.btn-ignore:disabled {
-  background: #fcd34d;
-  cursor: not-allowed;
-}
-
-.scan-info { font-size: 13px; color: #71717a; }
-.scan-info.error { color: #dc2626; }
-
-.filter-select, .search-input {
-  padding: 8px 12px;
-  font-size: 14px;
-  border: 1px solid #e4e4e7;
-  border-radius: 6px;
-  background: white;
-}
-
-.search-input {
-  width: 200px;
-}
-
-.notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-radius: 8px;
+.scan-info {
   font-size: 13px;
+  color: var(--st-text-secondary);
 }
 
-.notice.info {
-  background: #eff6ff;
-  color: #1d4ed8;
+.scan-info.error {
+  color: var(--st-error-text);
 }
 
+/* 统计 */
 .stats-row {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+  gap: 16px;
 }
 
-.stat-box {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
-  text-align: center;
-}
-
-.stat-num {
-  display: block;
-  font-size: 24px;
-  font-weight: 600;
-  color: #18181b;
-}
-
-.stat-num.red { color: #dc2626; }
-
-.stat-text { font-size: 13px; color: #71717a; margin-top: 4px; }
-
-.card {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.loading-state {
-  padding: 48px;
-  text-align: center;
-  color: #71717a;
-}
-
-.data-table {
-  width: 100%;
-  min-width: 700px;
+/* 表格：列宽等本地细节（基础样式来自 .st-table） */
+.broken-table {
   table-layout: fixed;
-  border-collapse: collapse;
+  min-width: 700px;
 }
 
-.table-wrapper {
-  overflow-x: auto;
-}
-
-.data-table th, .data-table td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.data-table th {
-  font-size: 12px;
-  font-weight: 500;
-  color: #71717a;
-  background: #fafafa;
+.broken-table th,
+.broken-table td {
   white-space: nowrap;
-}
-
-.data-table th.sortable {
-  cursor: pointer;
-  user-select: none;
-}
-
-.data-table th.sortable:hover {
-  background: #f4f4f5;
-}
-
-.data-table td {
-  font-size: 14px;
-  color: #18181b;
-  white-space: nowrap;
-}
-
-.data-table tbody tr:hover {
-  background: #fafafa;
 }
 
 .col-checkbox {
@@ -835,31 +526,30 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   cursor: pointer;
 }
 
+.col-url-head { width: 34%; }
+.col-source { width: 14%; }
+.col-reason { width: 13%; }
+.col-time { width: 22%; color: var(--st-text-secondary); }
+.col-count { width: 17%; }
+
 .cell-url {
   cursor: pointer;
 }
 
 .cell-url:hover .url-text {
-  color: #2563eb;
+  color: var(--st-info-text);
 }
 
 .url-text {
   font-family: monospace;
   font-size: 13px;
-  color: #71717a;
+  color: var(--st-text-secondary);
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color 0.15s;
+  transition: color var(--st-duration) var(--st-ease);
 }
-
-/* 列宽 */
-.col-url-head { width: 34%; }
-.col-source { width: 14%; }
-.col-reason { width: 13%; }
-.col-time { width: 22%; }
-.col-count { width: 17%; }
 
 .source-locations {
   display: flex;
@@ -867,461 +557,41 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   flex-wrap: wrap;
 }
 
-.location-tag {
-  font-size: 12px;
-  padding: 2px 8px;
-  background: #f4f4f5;
-  border-radius: 4px;
-  color: #3f3f46;
-}
-
-.location-tag.tag-blue {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.location-tag.tag-green {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-.location-tag.tag-teal {
-  background: #ccfbf1;
-  color: #0f766e;
-}
-
-.location-tag.tag-pink {
-  background: #fce7f3;
-  color: #be185d;
-}
-
-.location-tag.tag-purple {
-  background: #f3e8ff;
-  color: #7c3aed;
-}
-
-.location-tag.tag-orange {
-  background: #ffedd5;
-  color: #c2410c;
-}
-
-.location-tag.tag-indigo {
-  background: #e0e7ff;
-  color: #4338ca;
-}
-
-.location-tag.tag-cyan {
-  background: #cffafe;
-  color: #0891b2;
-}
-
-.location-tag.tag-amber {
-  background: #fef3c7;
-  color: #b45309;
-}
-
-.reason-tag {
-  font-size: 12px;
-  padding: 2px 8px;
-  background: #f4f4f5;
-  border-radius: 4px;
-  color: #3f3f46;
-  white-space: nowrap;
-}
-
-.reason-tag.tag-red {
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-.reason-tag.tag-orange {
-  background: #ffedd5;
-  color: #c2410c;
-}
-
-.reason-tag.tag-amber {
-  background: #fef3c7;
-  color: #b45309;
-}
-
-.reason-tag.tag-gray {
-  background: #f4f4f5;
-  color: #71717a;
-}
-
 .source-count {
   display: inline-block;
   min-width: 24px;
   padding: 4px 10px;
   text-align: center;
-  border-radius: 4px;
+  border-radius: var(--st-radius-sm);
   font-size: 12px;
   font-weight: 500;
-  background: #fee2e2;
-  color: #dc2626;
+  background: var(--st-error-bg);
+  color: var(--st-error-text);
   cursor: pointer;
+  transition: background var(--st-duration) var(--st-ease);
 }
 
 .source-count:hover {
-  background: #fecaca;
-}
-
-/* 分页 */
-.pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-top: 1px solid #f4f4f5;
-}
-
-.page-info {
-  font-size: 13px;
-  color: #71717a;
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.page-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  background: white;
-  color: #374151;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.page-btn:hover:not(:disabled) {
-  background: #f9fafb;
-}
-
-.page-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.page-num {
-  font-size: 13px;
-  color: #374151;
-  padding: 0 8px;
-}
-
-.page-size {
-  height: 32px;
-  padding: 0 8px;
-  font-size: 13px;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  background: white;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px;
-}
-
-.empty-icon { font-size: 48px; margin-bottom: 16px; }
-.empty-text { font-size: 16px; color: #18181b; }
-.empty-hint { font-size: 13px; color: #a1a1aa; margin-top: 4px; }
-
-/* 模态框 */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: white;
-  border-radius: 8px;
-  width: 90%;
-  max-width: 560px;
-  max-height: 85vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid #f4f4f5;
-  flex-shrink: 0;
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: #18181b;
-}
-
-.modal-close {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: none;
-  font-size: 20px;
-  color: #a1a1aa;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.modal-close:hover {
-  background: #f4f4f5;
-  color: #71717a;
-}
-
-.modal-body {
-  padding: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-
-/* 信息区域 */
-.info-section {
-  padding: 16px;
-  border-bottom: 1px solid #f4f4f5;
-  flex-shrink: 0;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 8px 0;
-  gap: 16px;
-}
-
-.info-item:first-child {
-  padding-top: 0;
-}
-
-.info-item:last-child {
-  padding-bottom: 0;
-}
-
-.info-label {
-  font-size: 13px;
-  color: #71717a;
-  flex-shrink: 0;
-  min-width: 70px;
-}
-
-.info-value {
-  font-size: 13px;
-  color: #18181b;
-  text-align: right;
-  word-break: break-all;
-  flex: 1;
-}
-
-.info-value.info-url {
-  font-size: 12px;
-  color: #71717a;
-  font-family: monospace;
-}
-
-/* 来源列表区域 - 布局覆盖 */
-:deep(.reference-section) {
-  padding: 16px;
-  border-bottom: 1px solid #f4f4f5;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-:deep(.reference-section:hover) {
-  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-}
-
-:deep(.reference-section::-webkit-scrollbar) {
-  width: 6px;
-}
-
-:deep(.reference-section::-webkit-scrollbar-track) {
-  background: transparent;
-}
-
-:deep(.reference-section::-webkit-scrollbar-thumb) {
-  background: transparent;
-  border-radius: 3px;
-}
-
-:deep(.reference-section:hover::-webkit-scrollbar-thumb) {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-:deep(.empty-references) {
-  border-bottom: 1px solid #f4f4f5;
-}
-
-/* 操作区域 */
-.action-section {
-  padding: 16px;
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.btn-action-ignore {
-  display: inline-block;
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #f59e0b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-action-ignore:hover {
-  background: #d97706;
-}
-
-.btn-action-replace {
-  display: inline-block;
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #18181b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-action-replace:hover {
-  background: #3f3f46;
-}
-
-.btn-action-replace:disabled {
-  background: #a1a1aa;
-  cursor: not-allowed;
-}
-
-/* 替换区域 */
-.replace-section {
-  border-top: 1px solid #f4f4f5;
-  flex-shrink: 0;
-}
-
-.replace-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.replace-header:hover {
-  background: #fafafa;
-}
-
-.replace-toggle {
-  font-size: 10px;
-  color: #a1a1aa;
-}
-
-.replace-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: #18181b;
-}
-
-.replace-form {
-  padding: 0 16px 16px;
-}
-
-.replace-input {
-  width: 100%;
-  height: 38px;
-  padding: 0 12px;
-  font-size: 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  outline: none;
-}
-
-.replace-input:focus {
-  border-color: #4f46e5;
-}
-
-.replace-input-error {
-  border-color: #ef4444;
-  background-color: #fef2f2;
-}
-
-.replace-input-error:focus {
-  border-color: #ef4444;
+  background: var(--st-error-border);
 }
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .toolbar-left, .toolbar-right {
+  .st-toolbar-left,
+  .st-toolbar-right {
     flex-wrap: wrap;
     width: 100%;
   }
 
-  .search-input {
-    width: 100%;
-  }
-
-  .filter-select {
+  .st-select {
     flex: 1;
     min-width: 0;
   }
 }
 
 @media (max-width: 640px) {
-  .pagination {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .page-info {
-    width: 100%;
-    text-align: center;
-  }
-
-  .modal-content {
-    max-width: 95%;
-    margin: 10px;
-  }
-
-  .stat-num {
-    font-size: 18px;
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 </style>
