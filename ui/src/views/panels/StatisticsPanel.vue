@@ -1,51 +1,36 @@
 <template>
   <div class="statistics-panel">
     <!-- 加载状态 -->
-    <div v-if="loading" class="loading-state">
-      <div class="loading-spinner"></div>
-      <span>加载中...</span>
-    </div>
+    <VLoading v-if="loading" />
 
     <!-- 错误状态 -->
-    <div v-else-if="error" class="error-state">
-      <div class="error-icon">⚠️</div>
-      <div class="error-message">{{ error }}</div>
-      <button class="retry-btn" @click="fetchStatistics">重试</button>
-    </div>
+    <VAlert v-else-if="error" type="error" title="获取统计数据失败" :description="error">
+      <template #actions>
+        <VButton size="sm" @click="fetchStatistics">重试</VButton>
+      </template>
+    </VAlert>
 
     <!-- 空状态 -->
-    <div v-else-if="isEmpty" class="empty-state">
-      <div class="empty-icon">📭</div>
-      <div class="empty-message">暂无附件数据</div>
-      <div class="empty-hint">上传附件后将在此显示统计信息</div>
-    </div>
+    <VEmpty
+      v-else-if="isEmpty"
+      title="暂无附件数据"
+      message="上传附件后将在此显示统计信息"
+    />
 
     <!-- 正常内容 -->
     <template v-else>
       <!-- 顶部统计 -->
       <div class="stats-grid">
-        <div class="stat-item">
-          <div class="stat-value">{{ formatBytes(totalSize) }}</div>
-          <div class="stat-label">总存储空间</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-value">{{ totalCount.toLocaleString() }}</div>
-          <div class="stat-label">附件总数</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-value">{{ policyCount }}</div>
-          <div class="stat-label">存储策略</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-value">{{ groupCount }}</div>
-          <div class="stat-label">分组数量</div>
-        </div>
+        <StatCard label="总存储空间" :value="formatBytes(totalSize)" />
+        <StatCard label="附件总数" :value="totalCount.toLocaleString()" />
+        <StatCard label="存储策略" :value="policyCount" />
+        <StatCard label="分组数量" :value="groupCount" />
       </div>
 
       <!-- 图表区域 -->
       <div class="charts-grid">
         <!-- 类型分布 -->
-        <div class="panel-card">
+        <div class="panel-card st-card">
           <div class="card-title">类型分布</div>
           <div class="pie-chart-area">
             <div class="pie-chart" ref="typeChartRef"></div>
@@ -60,7 +45,7 @@
         </div>
 
         <!-- 策略分布 -->
-        <div class="panel-card">
+        <div class="panel-card st-card">
           <div class="card-title"><span>策略分布 <span class="title-tag">Top 5</span></span></div>
           <div class="pie-chart-area" v-if="policyDataWithColor.length > 0">
             <div class="pie-chart" ref="policyChartRef"></div>
@@ -77,13 +62,13 @@
       </div>
 
       <!-- 分组统计 -->
-      <div class="panel-card">
+      <div class="panel-card st-card">
         <div class="card-title">分组统计</div>
         <div class="bar-chart" v-if="groupData.length > 0">
           <div class="bar-row" v-for="item in groupData" :key="item.key">
             <div class="bar-label">{{ item.name }}</div>
             <div class="bar-track">
-              <div class="bar-fill" :style="{ width: item.percent + '%' }"></div>
+              <div class="bar-fill" :style="{ width: item.percent + '%', background: chartPrimary }"></div>
             </div>
             <div class="bar-value">{{ formatBytes(item.size) }}</div>
           </div>
@@ -92,47 +77,40 @@
       </div>
 
       <!-- 详细数据表格 -->
-      <div class="panel-card">
+      <div class="panel-card st-card">
         <div class="card-title">
           <span>详细数据</span>
-          <div class="tab-btns">
-            <button
-              v-for="tab in tabs"
-              :key="tab.id"
-              :class="['tab-btn', { active: currentTab === tab.id }]"
-              @click="switchTab(tab.id)"
-            >{{ tab.label }}</button>
-          </div>
+          <PillTabs v-model="currentTab" :tabs="tabs" />
         </div>
-        <div class="table-wrapper" v-if="currentData.length > 0">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th class="col-name">名称</th>
-              <th class="col-count">文件数</th>
-              <th class="col-size">存储大小</th>
-              <th class="col-percent">占比</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in currentData" :key="item.key">
-              <td class="col-name">
-                <span class="item-icon">{{ getIcon(item.icon) }}</span>
-                <span class="table-name" :title="item.name">{{ item.name }}</span>
-              </td>
-              <td>{{ item.count.toLocaleString() }}</td>
-              <td>{{ formatBytes(item.size) }}</td>
-              <td>
-                <div class="percent-cell">
-                  <div class="percent-bar">
-                    <div class="percent-fill" :style="{ width: item.percent + '%' }"></div>
+        <div class="st-table-wrapper" v-if="currentData.length > 0">
+          <table class="st-table data-table">
+            <thead>
+              <tr>
+                <th class="col-name">名称</th>
+                <th class="col-count">文件数</th>
+                <th class="col-size">存储大小</th>
+                <th class="col-percent">占比</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in currentData" :key="item.key">
+                <td class="col-name">
+                  <span class="item-icon">{{ getIcon(item.icon) }}</span>
+                  <span class="table-name" :title="item.name">{{ item.name }}</span>
+                </td>
+                <td>{{ item.count.toLocaleString() }}</td>
+                <td>{{ formatBytes(item.size) }}</td>
+                <td>
+                  <div class="percent-cell">
+                    <div class="percent-bar">
+                      <div class="percent-fill" :style="{ width: item.percent + '%', background: chartPrimary }"></div>
+                    </div>
+                    <span class="percent-text">{{ item.percent }} %</span>
                   </div>
-                  <span class="percent-text">{{ item.percent }} %</span>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
         <div v-else class="no-data">暂无数据</div>
       </div>
@@ -143,8 +121,12 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
+import { VAlert, VButton, VEmpty, VLoading } from '@halo-dev/components'
 import type { StatisticsData } from '@/types/statistics'
 import { API_ENDPOINTS } from '@/constants/api'
+import { CHART_TYPE_COLORS, CHART_PALETTE, paletteColor } from '@/constants/colors'
+import StatCard from '@/components/StatCard.vue'
+import PillTabs from '@/components/PillTabs.vue'
 import echarts from '@/echarts'
 
 // 状态
@@ -166,16 +148,8 @@ const tabs = [
 ]
 const currentTab = ref('type')
 
-// 颜色配置
-const typeColors: Record<string, string> = {
-  image: '#3b82f6',
-  video: '#8b5cf6',
-  audio: '#ec4899',
-  document: '#10b981',
-  other: '#6b7280'
-}
-
-const policyColors = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4']
+// 条形图 / 占比条填充色（数据系主色）
+const chartPrimary = CHART_PALETTE[0]
 
 // 图标映射
 const iconMap: Record<string, string> = {
@@ -207,7 +181,7 @@ const groupData = computed(() => statisticsData.value?.byGroup ?? [])
 const typeDataWithColor = computed(() => {
   return typeData.value.map(item => ({
     ...item,
-    color: typeColors[item.key] || '#6b7280'
+    color: CHART_TYPE_COLORS[item.key] || CHART_TYPE_COLORS.other
   }))
 })
 
@@ -215,7 +189,7 @@ const policyDataWithColor = computed(() => {
   // 饼图只显示 Top 5
   return policyData.value.slice(0, 5).map((item, index) => ({
     ...item,
-    color: policyColors[index % policyColors.length]
+    color: paletteColor(index)
   }))
 })
 
@@ -223,14 +197,14 @@ const policyDataWithColor = computed(() => {
 const policyDataAllWithColor = computed(() => {
   return policyData.value.map((item, index) => ({
     ...item,
-    color: policyColors[index % policyColors.length]
+    color: paletteColor(index)
   }))
 })
 
 const groupDataWithColor = computed(() => {
   return groupData.value.map((item, index) => ({
     ...item,
-    color: policyColors[index % policyColors.length]
+    color: paletteColor(index)
   }))
 })
 
@@ -308,10 +282,6 @@ watch(() => statisticsData.value, () => {
 })
 
 // 方法
-const switchTab = (tabId: string) => {
-  currentTab.value = tabId
-}
-
 const getIcon = (iconKey: string): string => {
   return iconMap[iconKey] || '📦'
 }
@@ -366,99 +336,11 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-/* 加载状态 */
-.loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: #6b7280;
-}
-
-.loading-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid #e5e7eb;
-  border-top-color: #3b82f6;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 12px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* 错误状态 */
-.error-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  background: #fff;
-  border-radius: 8px;
-}
-
-.error-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-}
-
-.error-message {
-  font-size: 14px;
-  color: #ef4444;
-  margin-bottom: 16px;
-}
-
-.retry-btn {
-  padding: 8px 20px;
-  font-size: 14px;
-  color: #fff;
-  background: #3b82f6;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.retry-btn:hover {
-  background: #2563eb;
-}
-
-/* 空状态 */
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  background: #fff;
-  border-radius: 8px;
-}
-
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-}
-
-.empty-message {
-  font-size: 16px;
-  font-weight: 500;
-  color: #374151;
-  margin-bottom: 8px;
-}
-
-.empty-hint {
-  font-size: 14px;
-  color: #9ca3af;
-}
-
-/* 无数据提示 */
+/* 无数据提示（卡片内小范围占位） */
 .no-data {
   padding: 40px 20px;
   text-align: center;
-  color: #9ca3af;
+  color: var(--st-text-tertiary);
   font-size: 14px;
 }
 
@@ -469,26 +351,6 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.stat-item {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
-  text-align: center;
-}
-
-.stat-value {
-  font-size: 24px;
-  font-weight: 600;
-  color: #111;
-}
-
-.stat-label {
-  font-size: 13px;
-  color: #666;
-  margin-top: 4px;
-}
-
 /* 图表区域 */
 .charts-grid {
   display: grid;
@@ -496,10 +358,8 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
+/* 卡片基础样式来自 .st-card，此处仅保留内边距 */
 .panel-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
   padding: 20px;
 }
 
@@ -509,7 +369,7 @@ onBeforeUnmount(() => {
   align-items: center;
   font-size: 15px;
   font-weight: 600;
-  color: #111;
+  color: var(--st-text-primary);
   margin-bottom: 16px;
 }
 
@@ -519,9 +379,9 @@ onBeforeUnmount(() => {
   padding: 2px 6px;
   font-size: 11px;
   font-weight: 500;
-  color: #92400e;
-  background: #fef3c7;
-  border-radius: 4px;
+  color: var(--st-tag-amber-text);
+  background: var(--st-tag-amber-bg);
+  border-radius: var(--st-radius-sm);
   vertical-align: middle;
 }
 
@@ -570,11 +430,11 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #374151;
+  color: var(--st-text-secondary);
 }
 
 .legend-value {
-  color: #6b7280;
+  color: var(--st-text-secondary);
   font-weight: 500;
 }
 
@@ -594,7 +454,7 @@ onBeforeUnmount(() => {
 
 .bar-label {
   font-size: 13px;
-  color: #374151;
+  color: var(--st-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -602,94 +462,31 @@ onBeforeUnmount(() => {
 
 .bar-track {
   height: 20px;
-  background: #f3f4f6;
-  border-radius: 4px;
+  background: var(--st-bg-muted);
+  border-radius: var(--st-radius-sm);
   overflow: hidden;
 }
 
 .bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #3b82f6, #60a5fa);
-  border-radius: 4px;
-  transition: width 0.3s;
+  border-radius: var(--st-radius-sm);
+  transition: width var(--st-duration) var(--st-ease);
 }
 
 .bar-value {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--st-text-secondary);
   text-align: right;
 }
 
-/* Tab 切换 */
-.tab-btns {
-  display: flex;
-  gap: 4px;
-  background: #f3f4f6;
-  padding: 3px;
-  border-radius: 6px;
-}
-
-.tab-btn {
-  padding: 5px 12px;
-  font-size: 13px;
-  color: #6b7280;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  user-select: none;
-}
-
-.tab-btn:hover:not(.active) {
-  color: #374151;
-  background: rgba(255,255,255,0.5);
-}
-
-.tab-btn:active {
-  transform: scale(0.98);
-}
-
-.tab-btn.active {
-  color: #111;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-
-/* 表格 */
+/* 表格：列宽等本地细节（基础样式来自 .st-table） */
 .data-table {
-  width: 100%;
   min-width: 480px;
   table-layout: fixed;
-  border-collapse: collapse;
-}
-
-.table-wrapper {
-  overflow-x: auto;
-}
-
-.data-table th,
-.data-table td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.data-table th {
-  font-size: 12px;
-  font-weight: 500;
-  color: #6b7280;
-  background: #fafafa;
 }
 
 .data-table td {
-  font-size: 14px;
-  color: #18181b;
   white-space: nowrap;
-}
-
-.data-table tbody tr:hover {
-  background: #fafafa;
 }
 
 .item-icon {
@@ -723,31 +520,27 @@ onBeforeUnmount(() => {
   flex: 1;
   max-width: 100px;
   height: 6px;
-  background: #f3f4f6;
+  background: var(--st-bg-muted);
   border-radius: 3px;
   overflow: hidden;
 }
 
 .percent-fill {
   height: 100%;
-  background: #3b82f6;
   border-radius: 3px;
 }
 
 .percent-text {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--st-text-secondary);
   min-width: 40px;
 }
 
 /* 响应式 */
-@media (max-width: 1024px) {
+@media (max-width: 768px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
   }
-}
-
-@media (max-width: 768px) {
   .charts-grid {
     grid-template-columns: 1fr;
   }
@@ -757,17 +550,11 @@ onBeforeUnmount(() => {
   .bar-row {
     grid-template-columns: 80px 1fr 70px;
   }
-  .stat-value {
-    font-size: 20px;
-  }
 }
 
 @media (max-width: 640px) {
   .stats-grid {
     grid-template-columns: 1fr;
-  }
-  .stat-value {
-    font-size: 18px;
   }
   .data-table th,
   .data-table td {
