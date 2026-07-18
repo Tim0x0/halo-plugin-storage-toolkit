@@ -33,20 +33,20 @@ export const SOURCE_TYPE_LABELS: Record<string, string> = {
 }
 
 /**
- * 引用源类型样式类
+ * 引用源类型样式类（共享层 shared.css 的 .st-tag 变体）
  */
 export const SOURCE_TYPE_CLASSES: Record<string, string> = {
-  'Post': 'tag-blue',
-  'SinglePage': 'tag-blue',
-  'Comment': 'tag-pink',
-  'Reply': 'tag-pink',
-  'Moment': 'tag-orange',
-  'Photo': 'tag-orange',
-  'Doc': 'tag-indigo',
-  'SystemSetting': 'tag-purple',
-  'PluginSetting': 'tag-purple',
-  'ThemeSetting': 'tag-purple',
-  'User': 'tag-amber'
+  'Post': 'st-tag--blue',
+  'SinglePage': 'st-tag--blue',
+  'Comment': 'st-tag--pink',
+  'Reply': 'st-tag--pink',
+  'Moment': 'st-tag--orange',
+  'Photo': 'st-tag--orange',
+  'Doc': 'st-tag--indigo',
+  'SystemSetting': 'st-tag--purple',
+  'PluginSetting': 'st-tag--purple',
+  'ThemeSetting': 'st-tag--purple',
+  'User': 'st-tag--amber'
 }
 
 /**

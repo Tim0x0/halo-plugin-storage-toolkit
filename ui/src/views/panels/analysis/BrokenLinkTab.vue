@@ -122,7 +122,7 @@
               <td>
                 <div class="source-locations">
                   <span
-                    :class="['location-tag', getSourceTypeClass(type)]"
+                    :class="['st-tag', getSourceTypeClass(type)]"
                     v-for="type in getUniqueSourceTypes(link.sources)"
                     :key="type"
                     :title="getSourceTypeLabel(type)"

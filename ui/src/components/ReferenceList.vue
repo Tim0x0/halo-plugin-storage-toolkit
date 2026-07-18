@@ -279,12 +279,12 @@ watch(() => props.references, async (refs) => {
 .section-title {
   font-size: 13px;
   font-weight: 500;
-  color: #18181b;
+  color: var(--st-text-primary);
 }
 
 .section-count {
   font-size: 12px;
-  color: #a1a1aa;
+  color: var(--st-text-tertiary);
 }
 
 .reference-list {
@@ -298,14 +298,14 @@ watch(() => props.references, async (refs) => {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  background: #fafafa;
-  border-radius: 6px;
+  background: var(--st-bg-hover);
+  border-radius: var(--st-radius-md);
   text-decoration: none;
-  transition: background 0.15s;
+  transition: background var(--st-duration) var(--st-ease);
 }
 
 .reference-item:hover:not(.no-link) {
-  background: #f4f4f5;
+  background: var(--st-bg-muted);
 }
 
 .reference-item.no-link {
@@ -325,7 +325,7 @@ watch(() => props.references, async (refs) => {
 
 .ref-title {
   font-size: 13px;
-  color: #18181b;
+  color: var(--st-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -344,26 +344,26 @@ watch(() => props.references, async (refs) => {
 .ref-tag {
   font-size: 11px;
   padding: 1px 6px;
-  background: #e4e4e7;
-  color: #52525b;
-  border-radius: 3px;
+  background: var(--st-bg-muted);
+  color: var(--st-text-secondary);
+  border-radius: var(--st-radius-sm);
 }
 
 .ref-tag.deleted {
-  background: #fee2e2;
-  color: #dc2626;
+  background: var(--st-error-bg);
+  color: var(--st-error-text);
 }
 
 .ref-arrow {
   font-size: 12px;
-  color: #a1a1aa;
+  color: var(--st-text-tertiary);
   flex-shrink: 0;
 }
 
 .empty-references {
   padding: 32px 16px;
   text-align: center;
-  color: #a1a1aa;
+  color: var(--st-text-tertiary);
   font-size: 13px;
 }
 </style>

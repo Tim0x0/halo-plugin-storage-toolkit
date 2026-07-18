@@ -90,7 +90,7 @@
                   </div>
                 </td>
                 <td class="col-type">
-                  <span :class="['type-badge', getSourceTypeClass(log.sourceType)]">
+                  <span :class="['st-tag', getSourceTypeClass(log.sourceType)]">
                     {{ getSourceTypeLabel(log.sourceType) }}
                   </span>
                 </td>

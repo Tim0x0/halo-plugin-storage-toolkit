@@ -133,7 +133,7 @@
               <td class="col-ref-location">
                 <div class="ref-locations" v-if="item.references && item.references.length > 0">
                   <span
-                    :class="['location-tag', getSourceTypeClass(type)]"
+                    :class="['st-tag', getSourceTypeClass(type)]"
                     v-for="type in getUniqueSourceTypes(item.references)"
                     :key="type"
                     :title="getSourceTypeLabel(type)"
