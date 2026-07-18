@@ -1,151 +1,142 @@
 <template>
   <div class="reference-tab">
     <!-- 操作栏 -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <button class="btn-scan" @click="startScan" :disabled="scanning">
-          <span v-if="scanning">扫描中...</span>
-          <span v-else>开始扫描</span>
-        </button>
-        <button class="btn-clear" @click="clearRecords" :disabled="scanning || !stats.lastScanTime">
-          清空记录
-        </button>
-        <button
-          class="btn-delete"
+    <div class="st-toolbar">
+      <div class="st-toolbar-left">
+        <VButton type="secondary" :loading="scanning" @click="startScan">开始扫描</VButton>
+        <VButton type="danger" ghost :disabled="scanning || !stats.lastScanTime" @click="clearRecords">清空记录</VButton>
+        <VButton
+          type="danger"
           @click="deleteSelected"
           :disabled="scanning || selectedAttachments.length === 0"
           v-if="filterType === 'unreferenced' && attachmentList.length > 0"
         >
           删除选中 ({{ selectedAttachments.length }})
-        </button>
+        </VButton>
         <span class="scan-info" v-if="stats.lastScanTime">上次扫描：{{ formatTime(stats.lastScanTime) }}</span>
         <span class="scan-info error" v-else-if="stats.phase === 'ERROR'">扫描失败：{{ stats.errorMessage }}</span>
       </div>
-      <div class="toolbar-right">
+      <div class="st-toolbar-right">
         <div class="filter-wrapper">
-           <span class="filter-hint" v-if="filterType !== 'unreferenced'">切换至「未引用」可批量删除附件</span>
-            <select v-model="filterType" class="filter-select" @change="handleFilterChange">
+          <span class="filter-hint" v-if="filterType !== 'unreferenced'">切换至「未引用」可批量删除附件</span>
+          <select v-model="filterType" class="st-select" @change="handleFilterChange">
             <option value="all">全部</option>
             <option value="referenced">已引用</option>
             <option value="unreferenced">未引用</option>
           </select>
         </div>
-        <input
-          type="text"
-          v-model="searchQuery"
-          placeholder="搜索文件名..."
-          class="search-input"
-          @input="handleSearchDebounced"
-        />
+        <SearchInput v-model="searchQuery" placeholder="搜索文件名..." @search="handleSearch" />
       </div>
     </div>
 
     <!-- 提示信息 -->
-    <div class="notice warning">
-      <span class="notice-icon">💡</span>
-      <span>支持扫描文章、页面、评论、封面图、系统设置、插件设置、主题设置，可在插件设置中开启瞬间、图库和文档扫描</span>
-    </div>
+    <VAlert
+      type="warning"
+      description="支持扫描文章、页面、评论、封面图、系统设置、插件设置、主题设置，可在插件设置中开启瞬间、图库和文档扫描"
+    />
 
     <!-- 统计概览 -->
     <div class="stats-row">
-      <div class="stat-box">
-        <span class="stat-num">{{ referenceRate }}%</span>
-        <span class="stat-text">引用率</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num green">{{ stats.referencedCount }}</span>
-        <span class="stat-text">已引用</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num orange">{{ stats.unreferencedCount }}</span>
-        <span class="stat-text">未引用</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num orange">{{ formatBytes(stats.unreferencedSize) }}</span>
-        <span class="stat-text">未引用占用</span>
-      </div>
+      <StatCard label="引用率" :value="`${referenceRate}%`" />
+      <StatCard label="已引用" :value="stats.referencedCount" tone="success" />
+      <StatCard label="未引用" :value="stats.unreferencedCount" tone="warning" />
+      <StatCard label="未引用占用" :value="formatBytes(stats.unreferencedSize)" tone="warning" />
     </div>
 
     <!-- 附件列表 -->
-    <div class="card">
-      <div v-if="loading" class="loading-state">加载中...</div>
-      <div v-else-if="!stats.lastScanTime && stats.phase !== 'SCANNING'" class="empty-state">
-        请先点击「开始扫描」按钮进行扫描
-      </div>
-      <div v-else-if="attachmentList.length === 0" class="empty-state">
-        没有符合条件的附件
-      </div>
+    <div class="ref-card st-card">
+      <VLoading v-if="loading" />
+
+      <VEmpty
+        v-else-if="!stats.lastScanTime && stats.phase !== 'SCANNING'"
+        title="尚未扫描"
+        message="请先点击「开始扫描」按钮进行扫描"
+      >
+        <template #actions>
+          <VButton type="secondary" :loading="scanning" @click="startScan">开始扫描</VButton>
+        </template>
+      </VEmpty>
+
+      <VEmpty v-else-if="attachmentList.length === 0" title="没有符合条件的附件" />
+
       <template v-else>
-        <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th class="col-checkbox" v-if="filterType === 'unreferenced'">
-                <input
-                  type="checkbox"
-                  :checked="isAllSelected"
-                  :indeterminate="isIndeterminate"
-                  @change="toggleSelectAll"
-                />
-              </th>
-              <th class="col-filename">文件名</th>
-              <th class="col-type">类型</th>
-              <th class="col-size">大小</th>
-              <th class="col-ref-count sortable" @click="toggleSort('referenceCount')">
-                引用次数
-                <span v-if="sortField === 'referenceCount'">{{ sortDesc ? '↓' : '↑' }}</span>
-              </th>
-              <th class="col-ref-location">引用位置</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in attachmentList" :key="item.attachmentName" :class="{ highlighted: highlightedAttachment === item.attachmentName, selected: selectedAttachments.includes(item.attachmentName) }">
-              <td class="col-checkbox" v-if="filterType === 'unreferenced'">
-                <input
-                  type="checkbox"
-                  :checked="selectedAttachments.includes(item.attachmentName)"
-                  @change="toggleSelect(item.attachmentName)"
-                />
-              </td>
-              <td class="cell-name">
-                <div class="cell-name-inner">
-                <img
-                  v-if="item.mediaType?.startsWith('image/') && item.permalink"
-                  :src="utils.attachment.getThumbnailUrl(item.permalink, 'S')"
-                  class="file-thumbnail"
-                  @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
-                />
-                <span v-else class="file-icon">{{ getFileIcon(item.mediaType) }}</span>
-                <span class="file-name-text" @click="showReferenceDetail(item)" :title="item.displayName">{{ item.displayName }}</span>
-                </div>
-              </td>
-              <td>{{ item.mediaType }}</td>
-              <td>{{ formatBytes(item.size) }}</td>
-              <td>
-                <span
-                  :class="['ref-count', item.referenceCount > 0 ? 'has-ref' : 'no-ref']"
-                  @click="item.referenceCount > 0 && showReferenceDetail(item)"
-                  :style="{ cursor: item.referenceCount > 0 ? 'pointer' : 'default' }"
-                >
-                  {{ item.referenceCount }}
-                </span>
-              </td>
-              <td class="col-ref-location">
-                <div class="ref-locations" v-if="item.references && item.references.length > 0">
-                  <span
-                    :class="['st-tag', getSourceTypeClass(type)]"
-                    v-for="type in getUniqueSourceTypes(item.references)"
-                    :key="type"
-                    :title="getSourceTypeLabel(type)"
+        <div class="st-table-wrapper">
+          <table class="st-table ref-table">
+            <thead>
+              <tr>
+                <th class="col-checkbox" v-if="filterType === 'unreferenced'">
+                  <input
+                    type="checkbox"
+                    :checked="isAllSelected"
+                    :indeterminate="isIndeterminate"
+                    @change="toggleSelectAll"
+                  />
+                </th>
+                <th class="col-filename">文件名</th>
+                <th class="col-type">类型</th>
+                <th class="col-size">大小</th>
+                <th class="col-ref-count st-th--sortable" @click="toggleSort('referenceCount')">
+                  引用次数
+                  <span v-if="sortField === 'referenceCount'">{{ sortDesc ? '↓' : '↑' }}</span>
+                </th>
+                <th class="col-ref-location">引用位置</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in attachmentList"
+                :key="item.attachmentName"
+                :class="{
+                  'st-table-row--highlighted': highlightedAttachment === item.attachmentName,
+                  'st-table-row--selected': selectedAttachments.includes(item.attachmentName)
+                }"
+              >
+                <td class="col-checkbox" v-if="filterType === 'unreferenced'">
+                  <input
+                    type="checkbox"
+                    :checked="selectedAttachments.includes(item.attachmentName)"
+                    @change="toggleSelect(item.attachmentName)"
+                  />
+                </td>
+                <td class="cell-name">
+                  <div class="cell-name-inner">
+                    <img
+                      v-if="item.mediaType?.startsWith('image/') && item.permalink"
+                      :src="utils.attachment.getThumbnailUrl(item.permalink, 'S')"
+                      class="file-thumbnail"
+                      @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
+                    />
+                    <span v-else class="file-icon">{{ getFileIcon(item.mediaType) }}</span>
+                    <span class="file-name-text" @click="showReferenceDetail(item)" :title="item.displayName">{{ item.displayName }}</span>
+                  </div>
+                </td>
+                <td>{{ item.mediaType }}</td>
+                <td>{{ formatBytes(item.size) }}</td>
+                <td>
+                  <StatusBadge
+                    :tone="item.referenceCount > 0 ? 'success' : 'warning'"
+                    :style="{ cursor: item.referenceCount > 0 ? 'pointer' : 'default' }"
+                    @click="item.referenceCount > 0 && showReferenceDetail(item)"
                   >
-                    {{ getSourceTypeLabel(type) }}
-                  </span>
-                </div>
-                <span class="no-location" v-else>-</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                    {{ item.referenceCount }}
+                  </StatusBadge>
+                </td>
+                <td class="col-ref-location">
+                  <div class="ref-locations" v-if="item.references && item.references.length > 0">
+                    <span
+                      :class="['st-tag', getSourceTypeClass(type)]"
+                      v-for="type in getUniqueSourceTypes(item.references)"
+                      :key="type"
+                      :title="getSourceTypeLabel(type)"
+                    >
+                      {{ getSourceTypeLabel(type) }}
+                    </span>
+                  </div>
+                  <span class="no-location" v-else>-</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
         <!-- 分页 -->
@@ -154,53 +145,14 @@
     </div>
 
     <!-- 引用详情对话框 -->
-    <div class="modal-overlay" v-if="showDetailModal" @click.self="showDetailModal = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3 :title="selectedAttachment?.displayName">{{ selectedAttachment?.displayName }}</h3>
-          <button class="modal-close" @click="showDetailModal = false">×</button>
-        </div>
-        <div class="modal-body">
-          <!-- 预览区域 -->
-          <div class="preview-area" v-if="selectedAttachment?.mediaType?.startsWith('image/') && selectedAttachment?.permalink">
-            <img :src="selectedAttachment.permalink" class="preview-image" />
-          </div>
-          <div class="preview-area preview-placeholder" v-else>
-            <span class="preview-icon">{{ getFileIcon(selectedAttachment?.mediaType || '') }}</span>
-          </div>
-
-          <!-- 文件信息 -->
-          <div class="info-section">
-            <div class="info-item">
-              <span class="info-label">大小</span>
-              <span class="info-value">{{ formatBytes(selectedAttachment?.size || 0) }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">类型</span>
-              <span class="info-value">{{ selectedAttachment?.mediaType || '未知' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">存储策略</span>
-              <span class="info-value">{{ policyDisplayName ?? '加载中...' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">分组</span>
-              <span class="info-value">{{ groupDisplayName ?? '加载中...' }}</span>
-            </div>
-            <div class="info-item" v-if="selectedAttachment?.permalink">
-              <span class="info-label">链接</span>
-              <span class="info-value info-url">{{ selectedAttachment.permalink }}</span>
-            </div>
-          </div>
-
-          <!-- 引用列表 -->
-          <ReferenceList
-            :references="selectedAttachment?.references"
-            @reference-resolved="handleReferenceResolved"
-          />
-        </div>
-      </div>
-    </div>
+    <ReferenceDetailModal
+      v-if="showDetailModal"
+      :attachment="selectedAttachment"
+      :policy-display-name="policyDisplayName"
+      :group-display-name="groupDisplayName"
+      @close="showDetailModal = false"
+      @reference-resolved="handleReferenceResolved"
+    />
   </div>
 </template>
 
@@ -209,14 +161,17 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
 import type { ReferenceSource } from '@/types/duplicate'
 import { getFileIcon, getSourceTypeLabel, getSourceTypeClass, getUniqueSourceTypes } from '@/composables/useReferenceSource'
-import ReferenceList from '@/components/ReferenceList.vue'
 import type { ReferenceSourceItem } from '@/components/ReferenceList.vue'
+import StatCard from '@/components/StatCard.vue'
+import StatusBadge from '@/components/StatusBadge.vue'
+import SearchInput from '@/components/SearchInput.vue'
+import ReferenceDetailModal from '@/views/panels/components/ReferenceDetailModal.vue'
 import { utils } from '@halo-dev/ui-shared'
 
 interface AttachmentReferenceVo {
@@ -287,18 +242,14 @@ const isIndeterminate = computed(() => {
   return selectedAttachments.value.length > 0 && !isAllSelected.value
 })
 
-let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let pollTimerRef: ReturnType<typeof setTimeout> | null = null
 
-const handleSearchDebounced = () => {
-  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = setTimeout(() => {
-    if (page.value !== 1) {
-      page.value = 1
-    } else {
-      fetchReferences()
-    }
-  }, 300)
+const handleSearch = () => {
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchReferences()
+  }
 }
 
 const handleFilterChange = () => {
@@ -535,9 +486,6 @@ onUnmounted(() => {
   if (pollTimerRef) {
     clearTimeout(pollTimerRef)
   }
-  if (searchDebounceTimer) {
-    clearTimeout(searchDebounceTimer)
-  }
 })
 
 watch([page, pageSize], ([, newSize], [, oldSize]) => {
@@ -554,92 +502,19 @@ watch(() => route.query.attachment, () => {
 
 
 <style scoped>
-
 .reference-tab {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.toolbar-left, .toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.btn-scan {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #18181b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-scan:hover:not(:disabled) {
-  background: #27272a;
-}
-
-.btn-scan:disabled {
-  background: #a1a1aa;
-}
-
-.btn-clear {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: white;
-  color: #dc2626;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-clear:hover:not(:disabled) {
-  background: #fef2f2;
-  border-color: #f87171;
-}
-
-.btn-clear:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-delete {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #dc2626;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-delete:hover:not(:disabled) {
-  background: #b91c1c;
-}
-
-.btn-delete:disabled {
-  background: #fca5a5;
-  cursor: not-allowed;
-}
-
 .scan-info {
   font-size: 13px;
-  color: #71717a;
+  color: var(--st-text-secondary);
 }
 
 .scan-info.error {
-  color: #dc2626;
+  color: var(--st-error-text);
 }
 
 .filter-wrapper {
@@ -648,116 +523,33 @@ watch(() => route.query.attachment, () => {
   gap: 8px;
 }
 
-.filter-select, .search-input {
-  padding: 8px 12px;
-  font-size: 14px;
-  border: 1px solid #e4e4e7;
-  border-radius: 6px;
-  background: white;
-}
-
 .filter-hint {
   font-size: 12px;
-  color: #16a34a;
+  color: var(--st-success-text);
   white-space: nowrap;
 }
 
-.search-input {
-  width: 200px;
-}
-
+/* 统计概览 */
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
 }
 
-.stat-box {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
-  text-align: center;
-}
-
-.stat-num {
-  display: block;
-  font-size: 24px;
-  font-weight: 600;
-  color: #18181b;
-}
-
-.stat-num.green { color: #16a34a; }
-.stat-num.orange { color: #d97706; }
-
-.stat-text {
-  font-size: 13px;
-  color: #71717a;
-  margin-top: 4px;
-}
-
-.notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.notice.warning {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.card {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 0;
+/* 附件列表容器 */
+.ref-card {
   overflow: hidden;
 }
 
-.loading-state, .empty-state {
-  padding: 48px;
-  text-align: center;
-  color: #71717a;
-  font-size: 14px;
-}
-
-.data-table {
-  width: 100%;
-  min-width: 560px;
+/* 表格：列宽等本地细节（基础样式来自 .st-table） */
+.ref-table {
   table-layout: fixed;
-  border-collapse: collapse;
+  min-width: 560px;
 }
 
-.table-wrapper {
-  overflow-x: auto;
-}
-
-.data-table th, .data-table td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid #f4f4f5;
-  vertical-align: middle;
-}
-
-.data-table th {
-  font-size: 12px;
-  font-weight: 500;
-  color: #71717a;
-  background: #fafafa;
+.ref-table td {
+  font-size: 14px;
   white-space: nowrap;
-}
-
-.data-table th.sortable {
-  cursor: pointer;
-  user-select: none;
-}
-
-.data-table th.sortable:hover {
-  background: #f4f4f5;
 }
 
 .col-checkbox {
@@ -777,36 +569,6 @@ watch(() => route.query.attachment, () => {
   cursor: pointer;
 }
 
-.data-table td {
-  font-size: 14px;
-  color: #18181b;
-  white-space: nowrap;
-}
-
-.data-table tr.highlighted {
-  background: #fef3c7;
-}
-
-.data-table tbody tr {
-  transition: background 0.15s;
-}
-
-.data-table tbody tr:hover {
-  background: #fafafa;
-}
-
-.data-table tbody tr.selected {
-  background: #eff6ff;
-}
-
-.data-table tbody tr.selected:hover {
-  background: #dbeafe;
-}
-
-.data-table tbody tr.highlighted:hover {
-  background: #fef3c7;
-}
-
 .cell-name {
   cursor: pointer;
   min-width: 0;
@@ -820,7 +582,7 @@ watch(() => route.query.attachment, () => {
 }
 
 .cell-name:hover .file-name-text {
-  color: #2563eb;
+  color: var(--st-info-text);
 }
 
 .file-name-text {
@@ -828,31 +590,19 @@ watch(() => route.query.attachment, () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  transition: color 0.15s;
+  transition: color var(--st-duration) var(--st-ease);
 }
 
 .file-icon {
   font-size: 16px;
 }
 
-.ref-count {
-  display: inline-block;
-  min-width: 24px;
-  padding: 4px 10px;
-  text-align: center;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.ref-count.has-ref {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.ref-count.no-ref {
-  background: #fef3c7;
-  color: #92400e;
+.file-thumbnail {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: var(--st-radius-sm);
+  flex-shrink: 0;
 }
 
 .ref-locations {
@@ -861,330 +611,18 @@ watch(() => route.query.attachment, () => {
   flex-wrap: wrap;
 }
 
-.location-tag {
-  font-size: 12px;
-  padding: 2px 8px;
-  background: #f4f4f5;
-  border-radius: 4px;
-  color: #3f3f46;
-}
-
-.location-tag.tag-blue {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.location-tag.tag-green {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-.location-tag.tag-teal {
-  background: #ccfbf1;
-  color: #0f766e;
-}
-
-.location-tag.tag-pink {
-  background: #fce7f3;
-  color: #be185d;
-}
-
-.location-tag.tag-purple {
-  background: #f3e8ff;
-  color: #7c3aed;
-}
-
-.location-tag.tag-orange {
-  background: #ffedd5;
-  color: #c2410c;
-}
-
-.location-tag.tag-indigo {
-  background: #e0e7ff;
-  color: #4338ca;
-}
-
-.location-tag.tag-cyan {
-  background: #cffafe;
-  color: #0891b2;
-}
-
-.location-tag.tag-amber {
-  background: #fef3c7;
-  color: #b45309;
-}
-
 .no-location {
-  color: #a1a1aa;
-}
-
-/* 分页 */
-.pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-top: 1px solid #f4f4f5;
-}
-
-.page-info {
-  font-size: 13px;
-  color: #71717a;
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.page-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  background: white;
-  color: #374151;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.page-btn:hover:not(:disabled) {
-  background: #f9fafb;
-}
-
-.page-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.page-num {
-  font-size: 13px;
-  color: #374151;
-  padding: 0 8px;
-}
-
-.page-size {
-  height: 32px;
-  padding: 0 8px;
-  font-size: 13px;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  background: white;
-}
-
-/* 模态框 */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: white;
-  border-radius: 8px;
-  width: 90%;
-  max-width: 560px;
-  max-height: 85vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: #18181b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  padding-right: 12px;
-}
-
-.modal-close {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: none;
-  font-size: 20px;
-  color: #a1a1aa;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.modal-close:hover {
-  background: #f4f4f5;
-  color: #71717a;
-}
-
-.modal-body {
-  padding: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.modal-body:hover {
-  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-}
-
-.modal-body::-webkit-scrollbar {
-  width: 6px;
-}
-
-.modal-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.modal-body::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 3px;
-}
-
-.modal-body:hover::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-/* 预览区域 */
-.preview-area {
-  width: 100%;
-  height: 200px;
-  background: #fafafa;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.preview-area .preview-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.preview-area.preview-placeholder {
-  background: #f4f4f5;
-}
-
-.preview-icon {
-  font-size: 48px;
-  opacity: 0.4;
-}
-
-/* 文件信息区域 */
-.info-section {
-  padding: 16px;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 8px 0;
-}
-
-.info-item:first-child {
-  padding-top: 0;
-}
-
-.info-item:last-child {
-  padding-bottom: 0;
-}
-
-.info-label {
-  font-size: 13px;
-  color: #71717a;
-  flex-shrink: 0;
-}
-
-.info-value {
-  font-size: 13px;
-  color: #18181b;
-  text-align: right;
-  word-break: break-all;
-  margin-left: 16px;
-}
-
-.info-value.info-url {
-  font-size: 12px;
-  color: #71717a;
-}
-
-.file-thumbnail {
-  width: 24px;
-  height: 24px;
-  object-fit: cover;
-  border-radius: 4px;
-  flex-shrink: 0;
+  color: var(--st-text-tertiary);
 }
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .toolbar {
-    flex-wrap: wrap;
-  }
-
-  .toolbar-left, .toolbar-right {
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .search-input {
-    width: 100%;
-  }
-
   .stats-row {
     grid-template-columns: repeat(2, 1fr);
   }
 
   .filter-hint {
     display: none;
-  }
-}
-
-@media (max-width: 640px) {
-  .pagination {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .page-info {
-    width: 100%;
-    text-align: center;
-  }
-
-  .modal-content {
-    max-width: 95%;
-    margin: 10px;
-  }
-
-  .stat-num {
-    font-size: 18px;
   }
 }
 </style>
