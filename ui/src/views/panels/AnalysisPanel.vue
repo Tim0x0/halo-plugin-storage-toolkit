@@ -1,15 +1,6 @@
 <template>
   <div class="analysis">
-    <div class="sub-tabs">
-      <button
-        v-for="tab in subTabs"
-        :key="tab.id"
-        :class="['sub-tab', { active: activeTab === tab.id }]"
-        @click="activeTab = tab.id"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
+    <PillTabs v-model="activeTab" :tabs="subTabs" />
 
     <div class="sub-content">
       <ReferenceTab v-if="activeTab === 'reference'" />
@@ -22,12 +13,14 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import PillTabs from '@/components/PillTabs.vue'
+import type { PillTabItem } from '@/types/ui'
 import ReferenceTab from './analysis/ReferenceTab.vue'
 import DuplicateTab from './analysis/DuplicateTab.vue'
 import BrokenLinkTab from './analysis/BrokenLinkTab.vue'
 import WhitelistTab from './analysis/WhitelistTab.vue'
 
-const subTabs = [
+const subTabs: PillTabItem[] = [
   { id: 'reference', label: '引用统计' },
   { id: 'duplicate', label: '重复检测' },
   { id: 'broken-link', label: '断链检测' },
@@ -45,51 +38,7 @@ watch(activeTab, val => localStorage.setItem('storage-toolkit-analysis-sub-tab',
   gap: 16px;
 }
 
-.sub-tabs {
-  display: flex;
-  gap: 24px;
-  border-bottom: 1px solid #e4e4e7;
-  padding-bottom: 0;
-}
-
-.sub-tab {
-  padding: 12px 4px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #71717a;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.sub-tab:hover {
-  color: #3f3f46;
-}
-
-.sub-tab.active {
-  color: #18181b;
-  border-bottom-color: #18181b;
-}
-
 .sub-content {
   min-height: 400px;
-}
-
-/* 响应式 */
-@media (max-width: 768px) {
-  .sub-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-}
-
-@media (max-width: 640px) {
-  .sub-tab {
-    padding: 10px 4px;
-    font-size: 13px;
-  }
 }
 </style>

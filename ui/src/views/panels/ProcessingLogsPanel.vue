@@ -1,18 +1,7 @@
 <template>
   <div class="logs-panel-container">
-    <!-- Tab 导航 -->
-    <div class="tab-nav">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        :class="['tab-btn', { active: activeTab === tab.id }]"
-        @click="activeTab = tab.id"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
+    <PillTabs v-model="activeTab" :tabs="tabs" />
 
-    <!-- Tab 内容 -->
     <div class="tab-content">
       <ProcessingLogTab v-if="activeTab === 'processing'" />
       <CleanupLogTab v-else-if="activeTab === 'cleanup'" />
@@ -23,11 +12,13 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import PillTabs from '@/components/PillTabs.vue'
+import type { PillTabItem } from '@/types/ui'
 import ProcessingLogTab from './logs/ProcessingLogTab.vue'
 import CleanupLogTab from './logs/CleanupLogTab.vue'
 import UrlReplaceLogTab from './logs/UrlReplaceLogTab.vue'
 
-const tabs = [
+const tabs: PillTabItem[] = [
   { id: 'processing', label: '图片处理' },
   { id: 'cleanup', label: '清理记录' },
   { id: 'replace', label: '替换记录' }
@@ -44,51 +35,7 @@ watch(activeTab, val => localStorage.setItem('storage-toolkit-logs-sub-tab', val
   gap: 16px;
 }
 
-.tab-nav {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid #e5e7eb;
-  padding-bottom: 0;
-}
-
-.tab-btn {
-  padding: 10px 20px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #6b7280;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: all 0.2s;
-  margin-bottom: -1px;
-}
-
-.tab-btn:hover {
-  color: #374151;
-}
-
-.tab-btn.active {
-  color: #4f46e5;
-  border-bottom-color: #4f46e5;
-}
-
 .tab-content {
   flex: 1;
-}
-
-/* 响应式 */
-@media (max-width: 768px) {
-  .tab-nav {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-}
-
-@media (max-width: 640px) {
-  .tab-btn {
-    padding: 8px 14px;
-    font-size: 13px;
-  }
 }
 </style>
