@@ -51,6 +51,9 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
     private final ConfigMapContentUpdateHandler configMapHandler;
     private final PluginContentUpdateHandler pluginHandler;
 
+    // 引用替换串行化协调器（防止同一内容的并发替换互相覆盖）
+    private final ReferenceReplacementCoordinator coordinator = new ReferenceReplacementCoordinator();
+
     private static final int DEFAULT_CONCURRENCY = 3;
 
     @Override
@@ -213,7 +216,8 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
                     .distinct()
                     .collect(Collectors.joining(","));
 
-                return executeReplace(sourceType, sourceName, task)
+                // 使用协调器串行化同一 sourceName 的替换任务，防止并发覆盖
+                Mono<Void> serializedTask = executeReplace(sourceType, sourceName, task)
                     .flatMap(replaceResult ->
                         resolveLogTitleAndRefTypes(sourceType, first.getSourceTitle(),
                             first.getSettingName(), joinedRefTypes)
@@ -226,6 +230,8 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
                             }
                         })
                     );
+
+                return coordinator.submit(sourceName, serializedTask);
             })
             .then();
     }

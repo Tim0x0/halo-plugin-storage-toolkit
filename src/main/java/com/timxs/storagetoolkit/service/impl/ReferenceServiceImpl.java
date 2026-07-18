@@ -731,25 +731,14 @@ public class ReferenceServiceImpl implements ReferenceService {
                         contentType = isDraft ? "draft" : "content";
                     }
 
-                    // 用于 patch 计算的 base
-                    String baseSnapshotName = StringUtils.hasText(releaseSnapshotName)
-                        ? releaseSnapshotName : headSnapshotName;
-
-                    if (StringUtils.hasText(headSnapshotName) && StringUtils.hasText(baseSnapshotName)) {
+                    if (StringUtils.hasText(headSnapshotName)) {
                         AttachmentReference.ReferenceSource source = createSource(
                             "Doc", docName, "Doc:" + docName, null, false, contentType);
 
-                        final String finalBaseSnapshotName = baseSnapshotName;
-                        return client.fetch(Snapshot.class, baseSnapshotName)
-                            .flatMap(baseSnapshot -> {
-                                if (headSnapshotName.equals(finalBaseSnapshotName)) {
-                                    return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
-                                }
-                                return client.fetch(Snapshot.class, headSnapshotName)
-                                    .map(headSnapshot -> ContentWrapper.patchSnapshot(headSnapshot, baseSnapshot));
-                            })
-                            .doOnNext(contentWrapper -> {
-                                String htmlContent = contentWrapper.getContent();
+                        // Docsme 快照存储完整内容（经真实数据核实），直接读取，无需 patch 计算
+                        return client.fetch(Snapshot.class, headSnapshotName)
+                            .doOnNext(headSnapshot -> {
+                                String htmlContent = headSnapshot.getSpec().getContentPatch();
                                 if (StringUtils.hasText(htmlContent)) {
                                     ContentScanner.ExtractResult result = contentScanner.extractUrlsFromHtml(htmlContent);
                                     context.addExtractResult(result, source);

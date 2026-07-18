@@ -264,7 +264,7 @@
 
         <!-- 底部提示 -->
         <div class="confirm-tip">
-          💡 建议先执行「引用扫描」以确保引用正确替换
+          ⚠️ 批量处理前<strong class="text-danger">必须先执行「引用扫描」</strong>，否则新内容中的图片引用无法被自动替换
         </div>
       </div>
     </template>
@@ -477,8 +477,32 @@ const startProcessing = () => {
 
 // 处理自定义对话框确认
 const handleDialogConfirm = async () => {
-  showCustomDialog.value = false
+  // 如果勾选了自动替换引用，显示二次确认
+  if (replaceReferences.value) {
+    Dialog.warning({
+      title: '确认批量处理',
+      description: '⚠️ 是否已执行「引用扫描」？未扫描的情况下，新内容中的图片引用将无法被自动替换。',
+      confirmType: 'danger',
+      confirmText: '已扫描，开始处理',
+      cancelText: '去扫描',
+      async onConfirm() {
+        showCustomDialog.value = false
+        await executeBatchProcessing()
+      },
+      onCancel() {
+        // 关闭当前对话框，保留自定义对话框以便用户去扫描
+        Toast.info('请先在「分析」面板执行引用扫描')
+      }
+    })
+  } else {
+    // 未勾选自动替换引用，直接执行
+    showCustomDialog.value = false
+    await executeBatchProcessing()
+  }
+}
 
+// 执行批量处理任务
+const executeBatchProcessing = async () => {
   try {
     // 清除上次结果
     clearResults()
@@ -1374,6 +1398,11 @@ onUnmounted(() => {
   margin-top: 12px;
   font-size: 13px;
   color: #6b7280;
+}
+
+.text-danger {
+  color: #ef4444;
+  font-weight: 600;
 }
 
 .confirm-footer {

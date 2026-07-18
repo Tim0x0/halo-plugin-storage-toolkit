@@ -12,7 +12,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
-import run.halo.app.content.ContentWrapper;
 import run.halo.app.core.extension.content.Snapshot;
 import run.halo.app.extension.Extension;
 import run.halo.app.extension.GroupVersionKind;
@@ -261,12 +260,10 @@ public class PluginContentUpdateHandler implements ContentUpdateHandler {
 
     /**
      * 替换 Doc 内容
-     * Doc 插件使用 Snapshot 但结构与 Post/SinglePage 不同：
-     * - Doc 没有 baseSnapshot 字段
-     * - Doc 使用 releaseSnapshot 或 headSnapshot 作为基准
-     * - Doc 的 Snapshot 存储完整内容，不使用差异 patch
-     *
-     * 参考 ReferenceServiceImpl.scanDocs() 的扫描逻辑
+     * Doc 插件（Docsme，闭源）使用 Snapshot 但结构与 Post/SinglePage 不同（经真实数据核实）：
+     * - Doc 没有 baseSnapshot 字段，快照无 keep-raw 注解
+     * - 每个快照的 rawPatch/contentPatch 均存储完整内容，不使用差异 patch
+     * - 存在未发布草稿时 head != release，两个快照均需替换
      */
     private Mono<ReplaceResult> replaceDocContentUrls(Scheme docScheme, String sourceName,
                                               ReferenceReplacementTask task, ReferenceReplacementResult result) {
@@ -293,57 +290,30 @@ public class PluginContentUpdateHandler implements ContentUpdateHandler {
                         return Mono.just(ReplaceResult.empty());
                     }
 
-                    // Doc 使用 releaseSnapshot 或 headSnapshot 作为基准（与扫描逻辑一致）
-                    // Doc 没有 baseSnapshot 字段
-                    String baseSnapshotName = StringUtils.hasText(releaseSnapshotName)
-                        ? releaseSnapshotName : headSnapshotName;
+                    // Docsme 快照存储完整内容（经真实数据核实：rawPatch/contentPatch 均为完整 HTML，
+                    // 无 JSON Patch、无 keep-raw 注解），对 head/release 快照直接原地替换，
+                    // 不改动 Doc 的快照指向，不会影响 Docsme 自身的发布机制
+                    ReplaceResult replaceResult = ReplaceResult.builder().build();
 
-                    log.debug("Doc {} 使用 {} 作为基准快照", sourceName, baseSnapshotName);
+                    Mono<Void> replaceHead =
+                        replaceDocSnapshotInPlace(headSnapshotName, task, replaceResult);
+                    // 存在未发布草稿（head != release）时，已发布内容也需要替换
+                    Mono<Void> replaceRelease =
+                        StringUtils.hasText(releaseSnapshotName)
+                            && !releaseSnapshotName.equals(headSnapshotName)
+                            ? replaceDocSnapshotInPlace(releaseSnapshotName, task, replaceResult)
+                            : Mono.empty();
 
-                    // 获取 headSnapshot 的完整内容
-                    return fetchDocContent(headSnapshotName, baseSnapshotName)
-                        .flatMap(contentWrapper -> {
-                            String currentRaw = contentWrapper.getRaw();
-                            String currentContent = contentWrapper.getContent();
-
-                            if (!StringUtils.hasText(currentRaw) && !StringUtils.hasText(currentContent)) {
-                                return Mono.just(ReplaceResult.empty());
+                    return replaceHead.then(replaceRelease)
+                        .then(Mono.fromCallable(() -> {
+                            if (replaceResult.hasReplaced()) {
+                                log.debug("Doc {} 引用替换成功，替换了 {} 个 URL", sourceName,
+                                    replaceResult.getReplaced().size());
+                                result.incrementTypeCount("Doc");
+                                return replaceResult;
                             }
-
-                            // 替换 URL
-                            String newRaw = currentRaw != null ? currentRaw : "";
-                            String newContent = currentContent != null ? currentContent : "";
-                            ReplaceResult replaceResult = ReplaceResult.builder().build();
-
-                            for (Map.Entry<String, String> entry : task.getUrlMapping().entrySet()) {
-                                boolean urlReplaced = false;
-                                if (StringUtils.hasText(newRaw) && UrlReplacer.containsUrl(newRaw, entry.getKey())) {
-                                    newRaw = UrlReplacer.replaceUrl(newRaw, entry.getKey(), entry.getValue());
-                                    urlReplaced = true;
-                                }
-                                if (StringUtils.hasText(newContent) && UrlReplacer.containsUrl(newContent, entry.getKey())) {
-                                    newContent = UrlReplacer.replaceUrl(newContent, entry.getKey(), entry.getValue());
-                                    urlReplaced = true;
-                                }
-                                if (urlReplaced) {
-                                    replaceResult.addReplaced(entry.getKey());
-                                }
-                            }
-
-                            if (!replaceResult.hasReplaced()) {
-                                return Mono.just(ReplaceResult.empty());
-                            }
-
-                            // 直接更新 headSnapshot 的内容（Doc 存储完整内容，不使用差异 patch）
-                            final String finalNewRaw = newRaw;
-                            final String finalNewContent = newContent;
-                            return updateDocSnapshot(headSnapshotName, finalNewRaw, finalNewContent)
-                                .thenReturn(replaceResult)
-                                .doOnSuccess(v -> {
-                                    log.debug("Doc {} 引用替换成功，替换了 {} 个 URL", sourceName, replaceResult.getReplaced().size());
-                                    result.incrementTypeCount("Doc");
-                                });
-                        });
+                            return ReplaceResult.empty();
+                        }));
                 } catch (Exception e) {
                     log.error("处理 Doc {} 失败: {}", sourceName, e.getMessage());
                     ReplaceResult errorResult = ReplaceResult.builder().build();
@@ -366,32 +336,48 @@ public class PluginContentUpdateHandler implements ContentUpdateHandler {
     }
 
     /**
-     * 获取 Doc 内容（与扫描逻辑一致）
+     * 原地替换单个 Doc 快照中的 URL
+     * Docsme 快照的 rawPatch/contentPatch 存储完整内容（经真实数据核实），
+     * 直接字符串替换后写回，命中的 URL 记录到 replaceResult
      */
-    private Mono<ContentWrapper> fetchDocContent(String headSnapshotName, String baseSnapshotName) {
-        return client.fetch(Snapshot.class, baseSnapshotName)
-            .flatMap(baseSnapshot -> {
-                if (headSnapshotName.equals(baseSnapshotName)) {
-                    return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
-                }
-                return client.fetch(Snapshot.class, headSnapshotName)
-                    .map(headSnapshot -> ContentWrapper.patchSnapshot(headSnapshot, baseSnapshot));
-            });
-    }
-
-    /**
-     * 更新 Doc 的 Snapshot 内容
-     * Doc 的 Snapshot 存储完整内容，直接更新 rawPatch 和 contentPatch
-     */
-    private Mono<Void> updateDocSnapshot(String snapshotName, String newRaw, String newContent) {
+    private Mono<Void> replaceDocSnapshotInPlace(String snapshotName,
+                                                 ReferenceReplacementTask task,
+                                                 ReplaceResult replaceResult) {
         return client.fetch(Snapshot.class, snapshotName)
             .flatMap(snapshot -> {
+                String raw = snapshot.getSpec().getRawPatch();
+                String content = snapshot.getSpec().getContentPatch();
+                String newRaw = raw != null ? raw : "";
+                String newContent = content != null ? content : "";
+                boolean replaced = false;
+
+                for (Map.Entry<String, String> entry : task.getUrlMapping().entrySet()) {
+                    boolean urlReplaced = false;
+                    if (StringUtils.hasText(newRaw)
+                        && UrlReplacer.containsUrl(newRaw, entry.getKey())) {
+                        newRaw = UrlReplacer.replaceUrl(newRaw, entry.getKey(), entry.getValue());
+                        urlReplaced = true;
+                    }
+                    if (StringUtils.hasText(newContent)
+                        && UrlReplacer.containsUrl(newContent, entry.getKey())) {
+                        newContent = UrlReplacer.replaceUrl(newContent, entry.getKey(),
+                            entry.getValue());
+                        urlReplaced = true;
+                    }
+                    if (urlReplaced) {
+                        replaceResult.addReplaced(entry.getKey());
+                        replaced = true;
+                    }
+                }
+
+                if (!replaced) {
+                    return Mono.empty();
+                }
                 snapshot.getSpec().setRawPatch(newRaw);
                 snapshot.getSpec().setContentPatch(newContent);
                 snapshot.getSpec().setLastModifyTime(Instant.now());
-                return client.update(snapshot);
-            })
-            .then();
+                return client.update(snapshot).then();
+            });
     }
 
     /**
