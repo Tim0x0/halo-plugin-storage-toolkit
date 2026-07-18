@@ -7,17 +7,7 @@
     </VPageHeader>
 
     <div class="toolkit-body">
-      <nav class="toolkit-tabs">
-        <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          :class="['tab-btn', { active: currentTab === tab.id }]"
-          @click="switchTab(tab.id)"
-        >
-          <span class="tab-icon">{{ tab.icon }}</span>
-          <span class="tab-text">{{ tab.label }}</span>
-        </button>
-      </nav>
+      <PillTabs :tabs="tabs" :model-value="currentTab" @update:model-value="switchTab" />
 
       <main class="toolkit-main">
         <StatisticsPanel v-if="currentTab === 'statistics'" />
@@ -30,9 +20,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, defineAsyncComponent } from 'vue'
+import { ref, onMounted, watch, defineAsyncComponent, markRaw } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { VPageHeader, IconFolder, VLoading } from '@halo-dev/components'
+import {
+  VPageHeader,
+  IconFolder,
+  VLoading,
+  IconDashboard,
+  IconSearch,
+  IconMagic,
+  IconHistoryLine
+} from '@halo-dev/components'
+import PillTabs from '@/components/PillTabs.vue'
+import type { PillTabItem } from '@/types/ui'
 
 const ProcessingLogsPanel = defineAsyncComponent({
   loader: () => import(/* webpackChunkName: "processing-logs-panel" */ './panels/ProcessingLogsPanel.vue'),
@@ -57,11 +57,11 @@ const BatchProcessingPanel = defineAsyncComponent({
 const route = useRoute()
 const router = useRouter()
 
-const tabs = [
-  { id: 'statistics', label: '存储统计', icon: '📊' },
-  { id: 'analysis', label: '附件分析', icon: '🔍' },
-  { id: 'batch', label: '批量处理', icon: '⚡' },
-  { id: 'logs', label: '处理日志', icon: '📝' }
+const tabs: PillTabItem[] = [
+  { id: 'statistics', label: '存储统计', icon: markRaw(IconDashboard) },
+  { id: 'analysis', label: '附件分析', icon: markRaw(IconSearch) },
+  { id: 'batch', label: '批量处理', icon: markRaw(IconMagic) },
+  { id: 'logs', label: '处理日志', icon: markRaw(IconHistoryLine) }
 ]
 
 const STORAGE_KEY = 'storage-toolkit-tab'
@@ -110,7 +110,7 @@ watch(() => route.query.tab, (newTab) => {
 
 <style scoped>
 .toolkit-wrapper {
-  background: var(--color-fill-secondary, #f4f4f5);
+  background: var(--st-bg-page);
   min-height: 100vh;
 }
 
@@ -118,43 +118,8 @@ watch(() => route.query.tab, (newTab) => {
   padding: 16px;
 }
 
-.toolkit-tabs {
-  display: flex;
-  gap: 2px;
-  background: white;
-  padding: 6px;
-  border-radius: 8px;
+.st-pill-tabs {
   margin-bottom: 16px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-}
-
-.tab-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 18px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #71717a;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.tab-btn:hover {
-  color: #3f3f46;
-  background: #f4f4f5;
-}
-
-.tab-btn.active {
-  color: #18181b;
-  background: #f4f4f5;
-}
-
-.tab-icon {
-  font-size: 15px;
 }
 
 .toolkit-main {
@@ -163,24 +128,8 @@ watch(() => route.query.tab, (newTab) => {
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .toolkit-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
   .toolkit-body {
     padding: 12px;
-  }
-}
-
-@media (max-width: 640px) {
-  .tab-btn {
-    padding: 8px 12px;
-    font-size: 13px;
-  }
-
-  .tab-icon {
-    display: none;
   }
 }
 </style>
