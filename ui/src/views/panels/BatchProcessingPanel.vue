@@ -1,18 +1,22 @@
 <template>
   <div class="batch-processing-tab">
     <!-- 操作栏 -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <button class="btn-primary" @click="startProcessing" :disabled="processing || selectedAttachments.length === 0">
-          <span v-if="processing">处理中...</span>
-          <span v-else>开始处理 ({{ selectedAttachments.length }})</span>
-        </button>
-        <button class="btn-cancel" @click="cancelTask" :disabled="!processing">
+    <div class="st-toolbar">
+      <div class="st-toolbar-left">
+        <VButton
+          type="secondary"
+          :loading="processing"
+          :disabled="processing || selectedAttachments.length === 0"
+          @click="startProcessing"
+        >
+          {{ processing ? '处理中...' : `开始处理 (${selectedAttachments.length})` }}
+        </VButton>
+        <VButton type="danger" ghost :disabled="!processing" @click="cancelTask">
           取消任务
-        </button>
-        <button class="btn-refresh" @click="handleRefresh" :disabled="processing">
+        </VButton>
+        <VButton :disabled="processing" @click="handleRefresh">
           刷新
-        </button>
+        </VButton>
         <span class="status-hint warning" v-if="!settings.keepOriginalFile">
           ⚠️ 不保留原图模式
         </span>
@@ -20,63 +24,49 @@
           🌐 远程存储未启用
         </span>
       </div>
-      <div class="toolbar-right">
-        <input
-          type="text"
-          v-model="searchKeyword"
-          placeholder="搜索文件名..."
-          class="search-input"
-          @input="handleSearchDebounced"
-        />
+      <div class="st-toolbar-right">
+        <SearchInput v-model="searchKeyword" placeholder="搜索文件名..." @search="handleSearch" />
       </div>
     </div>
 
     <!-- 警告提示 -->
-    <div class="notice warning" v-if="!settings.keepOriginalFile">
-      <span class="notice-icon">⚠️</span>
-      <span>当前设置为「不保留原图」，处理后的文件将会被重命名，导致原有链接失效！原文件将被删除。</span>
-    </div>
+    <VAlert
+      v-if="!settings.keepOriginalFile"
+      type="warning"
+      description="当前设置为「不保留原图」，处理后的文件将会被重命名，导致原有链接失效！原文件将被删除。"
+    />
 
     <!-- 配置说明 -->
-    <div class="notice info">
-      <span class="notice-icon">💡</span>
-      <span>批量处理使用插件设置中「图片处理」分组的配置（过滤规则、格式转换、水印等），请先在插件设置中配置好处理参数。</span>
-    </div>
+    <VAlert
+      type="info"
+      description="批量处理使用插件设置中「图片处理」分组的配置（过滤规则、格式转换、水印等），请先在插件设置中配置好处理参数。"
+    />
 
     <!-- 扫描进度条 - 仅在处理中显示 -->
-    <div class="progress-section" v-if="processing">
-      <div class="progress-header">
-        <span class="progress-text" v-if="!status.progress || status.progress.total <= 0">准备中...</span>
-        <span class="progress-text" v-else>正在处理... {{ status.progress.processed }}/{{ status.progress.total }}</span>
-        <span class="progress-percent" v-if="status.progress && status.progress.total > 0">{{ progressPercent }}%</span>
-      </div>
-      <div class="progress-bar" v-if="status.progress && status.progress.total > 0">
-        <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
-      </div>
+    <div class="progress-section st-card" v-if="processing">
+      <StProgressBar
+        :percent="progressPercent"
+        tone="success"
+        show-label
+        :indeterminate="!status.progress || status.progress.total <= 0"
+      >
+        <template #label>
+          <span v-if="!status.progress || status.progress.total <= 0">准备中...</span>
+          <span v-else>正在处理... {{ status.progress.processed }}/{{ status.progress.total }}</span>
+        </template>
+      </StProgressBar>
     </div>
 
     <!-- 处理结果统计 - 仅在完成后显示 -->
     <div class="stats-row" v-if="showResults">
-      <div class="stat-box">
-        <span class="stat-num green">{{ lastResult.succeeded }}</span>
-        <span class="stat-text">成功</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num red">{{ lastResult.failed }}</span>
-        <span class="stat-text">失败</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num orange">{{ lastResult.skipped }}</span>
-        <span class="stat-text">跳过</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num blue">{{ formatBytes(lastResult.savedBytes) }}</span>
-        <span class="stat-text">节省空间</span>
-      </div>
+      <StatCard label="成功" :value="lastResult.succeeded" tone="success" />
+      <StatCard label="失败" :value="lastResult.failed" tone="error" />
+      <StatCard label="跳过" :value="lastResult.skipped" />
+      <StatCard label="节省空间" :value="formatBytes(lastResult.savedBytes)" tone="success" />
     </div>
 
     <!-- 失败/跳过日志 - 仅在有失败或跳过时显示 -->
-    <div class="log-section" v-if="showResults && (lastResult.failedItems.length > 0 || lastResult.skippedItems.length > 0)">
+    <div class="log-section st-card" v-if="showResults && (lastResult.failedItems.length > 0 || lastResult.skippedItems.length > 0)">
       <div class="log-tabs">
         <button
           class="log-tab"
@@ -112,61 +102,59 @@
     </div>
 
     <!-- 附件列表 - 表格样式 -->
-    <div class="card">
-      <div v-if="loading" class="loading-state">加载中...</div>
-      <div v-else-if="attachments.length === 0" class="empty-state">
-        没有符合条件的附件
-      </div>
+    <div class="list-card st-card">
+      <VLoading v-if="loading" />
+      <VEmpty v-else-if="attachments.length === 0" title="没有符合条件的附件" />
       <template v-else>
-        <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th class="col-checkbox">
-                <input
-                  type="checkbox"
-                  :checked="isAllSelected"
-                  :indeterminate="isIndeterminate"
-                  @change="toggleSelectAll"
-                  :disabled="processing"
-                />
-              </th>
-              <th class="col-filename">文件名</th>
-              <th class="col-type">类型</th>
-              <th class="col-size">大小</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="att in attachments"
-              :key="att.name"
-              :class="{ selected: selectedAttachments.includes(att.name) }"
-              @click="!processing && toggleSelect(att.name)"
-            >
-              <td class="col-checkbox" @click.stop>
-                <input
-                  type="checkbox"
-                  :checked="selectedAttachments.includes(att.name)"
-                  @change="toggleSelect(att.name)"
-                  :disabled="processing"
-                />
-              </td>
-              <td class="cell-name" @click.stop="openPreview(att)">
-                <img
-                  v-if="att.permalink && isImage(att.mediaType)"
-                  :src="utils.attachment.getThumbnailUrl(att.permalink, 'S')"
-                  class="file-thumbnail"
-                  loading="lazy"
-                  @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
-                />
-                <span v-else class="file-icon">{{ getFileIcon(att.mediaType) }}</span>
-                <span class="file-name-text" :title="att.displayName">{{ att.displayName }}</span>
-              </td>
-              <td>{{ att.mediaType }}</td>
-              <td>{{ formatBytes(att.size) }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="st-table-wrapper">
+          <table class="st-table batch-table">
+            <thead>
+              <tr>
+                <th class="col-checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="isAllSelected"
+                    :indeterminate="isIndeterminate"
+                    @change="toggleSelectAll"
+                    :disabled="processing"
+                  />
+                </th>
+                <th class="col-filename">文件名</th>
+                <th class="col-type">类型</th>
+                <th class="col-size">大小</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="att in attachments"
+                :key="att.name"
+                :class="{ 'st-table-row--selected': selectedAttachments.includes(att.name) }"
+                @click="!processing && toggleSelect(att.name)"
+              >
+                <td class="col-checkbox" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="selectedAttachments.includes(att.name)"
+                    @change="toggleSelect(att.name)"
+                    :disabled="processing"
+                  />
+                </td>
+                <td class="cell-name" @click.stop="openPreview(att)">
+                  <img
+                    v-if="att.permalink && isImage(att.mediaType)"
+                    :src="utils.attachment.getThumbnailUrl(att.permalink, 'S')"
+                    class="file-thumbnail"
+                    loading="lazy"
+                    @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'"
+                  />
+                  <span v-else class="file-icon">{{ getFileIcon(att.mediaType) }}</span>
+                  <span class="file-name-text" :title="att.displayName">{{ att.displayName }}</span>
+                </td>
+                <td>{{ att.mediaType }}</td>
+                <td>{{ formatBytes(att.size) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
         <!-- 分页 -->
@@ -175,60 +163,26 @@
     </div>
 
     <!-- 预览模态框 -->
-    <div class="modal-overlay" v-if="showPreview" @click.self="showPreview = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3 :title="previewAttachment?.displayName">{{ previewAttachment?.displayName }}</h3>
-          <button class="modal-close" @click="showPreview = false">×</button>
-        </div>
-        <div class="modal-body">
-          <!-- 预览区域 -->
-          <div class="preview-area" v-if="previewAttachment?.permalink && isImage(previewAttachment.mediaType)">
-            <img :src="previewAttachment.permalink" class="preview-image" />
-          </div>
-          <div class="preview-area preview-placeholder" v-else>
-            <span class="preview-icon">{{ getFileIcon(previewAttachment?.mediaType ?? null) }}</span>
-          </div>
-
-          <!-- 文件信息 -->
-          <div class="info-section">
-            <div class="info-item">
-              <span class="info-label">大小</span>
-              <span class="info-value">{{ formatBytes(previewAttachment?.size || 0) }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">类型</span>
-              <span class="info-value">{{ previewAttachment?.mediaType || '未知' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">存储策略</span>
-              <span class="info-value">{{ policyDisplayName ?? '加载中...' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">分组</span>
-              <span class="info-value">{{ groupDisplayName ?? '加载中...' }}</span>
-            </div>
-            <div class="info-item" v-if="previewAttachment?.permalink">
-              <span class="info-label">链接</span>
-              <span class="info-value info-url">{{ previewAttachment.permalink }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <BatchPreviewModal
+      v-if="showPreview && previewAttachment"
+      :attachment="previewAttachment"
+      :policy-display-name="policyDisplayName"
+      :group-display-name="groupDisplayName"
+      @close="showPreview = false"
+    />
   </div>
 
   <!-- 批量处理确认对话框 -->
   <VModal
     v-model:visible="showCustomDialog"
     :width="480"
-    :closable="true"
-    :mask-closable="true"
+    mount-to-body
+    :layer-closable="true"
     @close="handleDialogCancel"
   >
     <template #header>{{ getDialogTitle() }}</template>
     <template #default>
-      <div class="batch-confirm-content">
+      <div class="st-scope batch-confirm-content">
         <!-- 描述内容 -->
         <div class="confirm-description">
           确定要处理选中的 <strong>{{ selectedAttachments.length }}</strong> 个附件吗？
@@ -285,12 +239,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VPagination, VAlert, VEmpty, VLoading } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes } from '@/utils/format'
 import { getFileIcon, isImage } from '@/composables/useReferenceSource'
 import { utils } from '@halo-dev/ui-shared'
+import StatCard from '@/components/StatCard.vue'
+import StProgressBar from '@/components/StProgressBar.vue'
+import SearchInput from '@/components/SearchInput.vue'
+import BatchPreviewModal from '@/views/panels/components/BatchPreviewModal.vue'
 
 interface AttachmentItem {
   name: string
@@ -393,7 +351,6 @@ const previewAttachment = ref<AttachmentItem | null>(null)
 const policyDisplayName = ref<string | null>(null)
 const groupDisplayName = ref<string | null>(null)
 
-let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let pollingTimer: ReturnType<typeof setTimeout> | null = null
 
 const progressPercent = computed(() => {
@@ -636,17 +593,14 @@ const toggleSelectAll = () => {
   }
 }
 
-// 分页
-const handleSearchDebounced = () => {
-  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = setTimeout(() => {
-    selectedAttachments.value = []  // 搜索时清空选择
-    if (page.value !== 1) {
-      page.value = 1
-    } else {
-      fetchAttachments()
-    }
-  }, 300)
+// 搜索（防抖由 SearchInput 组件负责）
+const handleSearch = () => {
+  selectedAttachments.value = []  // 搜索时清空选择
+  if (page.value !== 1) {
+    page.value = 1
+  } else {
+    fetchAttachments()
+  }
 }
 
 watch([page, pageSize], ([, newSize], [, oldSize]) => {
@@ -710,9 +664,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopPolling()
-  if (searchDebounceTimer) {
-    clearTimeout(searchDebounceTimer)
-  }
 })
 </script>
 
@@ -723,160 +674,22 @@ onUnmounted(() => {
   gap: 16px;
 }
 
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.toolbar-left, .toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.btn-primary {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #18181b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: #27272a;
-}
-
-.btn-primary:disabled {
-  background: #a1a1aa;
-  cursor: not-allowed;
-}
-
-.btn-cancel {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: white;
-  color: #dc2626;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-cancel:hover:not(:disabled) {
-  background: #fef2f2;
-  border-color: #f87171;
-}
-
-.btn-cancel:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-refresh {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: white;
-  color: #52525b;
-  border: 1px solid #e4e4e7;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-refresh:hover:not(:disabled) {
-  background: #f4f4f5;
-  border-color: #d4d4d8;
-  color: #18181b;
-}
-
-.btn-refresh:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .status-hint {
   font-size: 13px;
   font-weight: 500;
 }
 
 .status-hint.warning {
-  color: #d97706;
+  color: var(--st-warning-text);
 }
 
 .status-hint.info {
-  color: #2563eb;
+  color: var(--st-info-text);
 }
 
-.search-input {
-  padding: 8px 12px;
-  font-size: 14px;
-  border: 1px solid #e4e4e7;
-  border-radius: 6px;
-  background: white;
-  width: 200px;
-}
-
-/* 进度条 */
+/* 进度条容器（外观由 .st-card 提供，此处只补内边距） */
 .progress-section {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
   padding: 16px;
-}
-
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.progress-text {
-  font-size: 13px;
-  color: #18181b;
-}
-
-.progress-percent {
-  font-size: 13px;
-  color: #16a34a;
-  font-weight: 500;
-}
-
-.progress-bar {
-  height: 6px;
-  background: #f3f4f6;
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: #16a34a;
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.notice.warning {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.notice.info {
-  background: #eff6ff;
-  color: #1d4ed8;
 }
 
 /* 统计 */
@@ -886,39 +699,14 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.stat-box {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
-  text-align: center;
-}
-
-.stat-num {
-  display: block;
-  font-size: 24px;
-  font-weight: 600;
-  color: #18181b;
-}
-
-.stat-num.green { color: #16a34a; }
-.stat-num.red { color: #dc2626; }
-.stat-num.orange { color: #d97706; }
-.stat-num.blue { color: #2563eb; }
-
-.stat-text { font-size: 13px; color: #71717a; margin-top: 4px; }
-
-/* 日志 */
+/* 日志（外观由 .st-card 提供，此处保留圆角裁剪） */
 .log-section {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
   overflow: hidden;
 }
 
 .log-tabs {
   display: flex;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--st-border);
 }
 
 .log-tab {
@@ -926,14 +714,14 @@ onUnmounted(() => {
   font-size: 13px;
   background: none;
   border: none;
-  color: #71717a;
+  color: var(--st-text-secondary);
   cursor: pointer;
 }
 
 .log-tab.active {
-  color: #18181b;
+  color: var(--st-text-primary);
   font-weight: 500;
-  border-bottom: 2px solid #18181b;
+  border-bottom: 2px solid var(--st-text-primary);
   margin-bottom: -1px;
 }
 
@@ -946,17 +734,17 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   padding: 10px 16px;
-  border-bottom: 1px solid #f4f4f5;
+  border-bottom: 1px solid var(--st-border-subtle);
 }
 
 .log-item:last-child { border-bottom: none; }
 
-.log-item.failed { background: #fef2f2; }
-.log-item.skipped { background: #fffbeb; }
+.log-item.failed { background: var(--st-error-bg); }
+.log-item.skipped { background: var(--st-warning-bg); }
 
 .log-name {
   font-size: 13px;
-  color: #18181b;
+  color: var(--st-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -966,7 +754,7 @@ onUnmounted(() => {
 
 .log-reason {
   font-size: 12px;
-  color: #71717a;
+  color: var(--st-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -974,44 +762,19 @@ onUnmounted(() => {
   max-width: 50%;
 }
 
-/* 卡片和表格 */
-.card {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 0;
+/* 列表卡片（外观由 .st-card 提供，此处保留圆角裁剪） */
+.list-card {
   overflow: hidden;
 }
 
-.loading-state, .empty-state {
-  padding: 48px;
-  text-align: center;
-  color: #71717a;
-  font-size: 14px;
-}
-
-.data-table {
-  width: 100%;
-  min-width: 520px;
+/* 表格：列宽等本地细节（基础样式来自 .st-table） */
+.batch-table {
   table-layout: fixed;
-  border-collapse: collapse;
+  min-width: 520px;
 }
 
-.table-wrapper {
-  overflow-x: auto;
-}
-
-.data-table th, .data-table td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.data-table th {
-  font-size: 12px;
-  font-weight: 500;
-  color: #71717a;
-  background: #fafafa;
+.batch-table td {
+  white-space: nowrap;
 }
 
 .col-checkbox {
@@ -1027,29 +790,11 @@ onUnmounted(() => {
   width: 16px;
   height: 16px;
   cursor: pointer;
+  accent-color: var(--st-color-primary);
 }
 
-.data-table td {
-  font-size: 14px;
-  color: #18181b;
-  white-space: nowrap;
-}
-
-.data-table tbody tr {
-  transition: background 0.15s;
+.batch-table tbody tr {
   cursor: pointer;
-}
-
-.data-table tbody tr:hover {
-  background: #fafafa;
-}
-
-.data-table tbody tr.selected {
-  background: #eff6ff;
-}
-
-.data-table tbody tr.selected:hover {
-  background: #dbeafe;
 }
 
 .cell-name {
@@ -1061,14 +806,14 @@ onUnmounted(() => {
 }
 
 .cell-name:hover .file-name-text {
-  color: #2563eb;
+  color: var(--st-color-primary);
 }
 
 .file-thumbnail {
   width: 32px;
   height: 32px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--st-radius-sm);
   flex-shrink: 0;
 }
 
@@ -1083,228 +828,17 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  transition: color 0.15s;
+  transition: color var(--st-duration) var(--st-ease);
 }
 
-/* 分页 */
-.pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-top: 1px solid #f4f4f5;
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.page-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  background: white;
-  color: #374151;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.page-btn:hover:not(:disabled) {
-  background: #f9fafb;
-}
-
-.page-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.page-num {
-  font-size: 13px;
-  color: #374151;
-  padding: 0 8px;
-}
-
-.page-size {
-  height: 32px;
-  padding: 0 8px;
-  font-size: 13px;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  background: white;
-}
-
-/* 模态框 */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: white;
-  border-radius: 8px;
-  width: 90%;
-  max-width: 560px;
-  max-height: 85vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: #18181b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  padding-right: 12px;
-}
-
-.modal-close {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: none;
-  font-size: 20px;
-  color: #a1a1aa;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.modal-close:hover {
-  background: #f4f4f5;
-  color: #71717a;
-}
-
-.modal-body {
-  padding: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.modal-body:hover {
-  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-}
-
-.modal-body::-webkit-scrollbar {
-  width: 6px;
-}
-
-.modal-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.modal-body::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 3px;
-}
-
-.modal-body:hover::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-/* 预览区域 */
-.preview-area {
-  width: 100%;
-  height: 200px;
-  background: #fafafa;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.preview-area .preview-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.preview-area.preview-placeholder {
-  background: #f4f4f5;
-}
-
-.preview-icon {
-  font-size: 48px;
-  opacity: 0.4;
-}
-
-/* 文件信息区域 */
-.info-section {
-  padding: 16px;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 8px 0;
-}
-
-.info-item:first-child {
-  padding-top: 0;
-}
-
-.info-item:last-child {
-  padding-bottom: 0;
-}
-
-.info-label {
-  font-size: 13px;
-  color: #71717a;
-  flex-shrink: 0;
-}
-
-.info-value {
-  font-size: 13px;
-  color: #18181b;
-  text-align: right;
-  word-break: break-all;
-  margin-left: 16px;
-}
-
-.info-value.info-url {
-  font-size: 12px;
-  color: #71717a;
-}
-
-/* 批量处理确认对话框 - 参考 Halo 官方样式 */
+/* 批量处理确认对话框 */
 .batch-confirm-content {
   padding: 4px 0;
 }
 
 .confirm-description {
   font-size: 14px;
-  color: #374151;
+  color: var(--st-text-primary);
   line-height: 1.5;
   margin-bottom: 12px;
 }
@@ -1318,22 +852,22 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: var(--st-radius-md);
   font-size: 13px;
   line-height: 1.5;
   margin-top: 8px;
 }
 
 .confirm-alert-beta {
-  background: #fffbeb;
-  color: #92400e;
-  border: 1px solid #fcd34d;
+  background: var(--st-warning-bg);
+  color: var(--st-warning-text-strong);
+  border: 1px solid var(--st-warning-border);
 }
 
 .confirm-alert-warning {
-  background: #fef2f2;
-  color: #dc2626;
-  border: 1px solid #fecaca;
+  background: var(--st-error-bg);
+  color: var(--st-error-text);
+  border: 1px solid var(--st-error-border);
 }
 
 .alert-icon {
@@ -1344,9 +878,9 @@ onUnmounted(() => {
 .confirm-option {
   margin-top: 16px;
   padding: 12px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  background: var(--st-bg-hover);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
 }
 
 .confirm-checkbox-label {
@@ -1363,8 +897,9 @@ onUnmounted(() => {
   cursor: pointer;
   margin-top: 1px;
   flex-shrink: 0;
-  border-radius: 4px;
-  border: 1px solid #d1d5db;
+  border-radius: var(--st-radius-sm);
+  border: 1px solid var(--st-border-input);
+  accent-color: var(--st-color-primary);
 }
 
 .confirm-checkbox-text {
@@ -1376,19 +911,19 @@ onUnmounted(() => {
 .checkbox-main {
   font-size: 14px;
   font-weight: 500;
-  color: #d97706;
+  color: var(--st-warning-text);
 }
 
 .checkbox-sub {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--st-text-secondary);
 }
 
 .confirm-option-hint {
   margin-top: 8px;
   padding-left: 24px;
   font-size: 12px;
-  color: #b45309;
+  color: var(--st-warning-text-strong);
 }
 
 .confirm-tip {
@@ -1397,11 +932,11 @@ onUnmounted(() => {
   gap: 6px;
   margin-top: 12px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--st-text-secondary);
 }
 
 .text-danger {
-  color: #ef4444;
+  color: var(--st-error-text);
   font-weight: 600;
 }
 
@@ -1414,43 +949,8 @@ onUnmounted(() => {
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .toolbar {
-    flex-wrap: wrap;
-  }
-
-  .toolbar-left, .toolbar-right {
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .search-input {
-    width: 100%;
-  }
-
   .stats-row {
     grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 640px) {
-  .pagination {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .page-info {
-    width: 100%;
-    text-align: center;
-  }
-
-  .modal-content {
-    max-width: 95%;
-    margin: 10px;
-  }
-
-  .stat-num {
-    font-size: 18px;
   }
 }
 </style>
