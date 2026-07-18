@@ -2,70 +2,47 @@
   <div class="processing-log-tab">
     <!-- 统计卡片 -->
     <div class="stats-grid" v-if="stats">
-      <div class="stat-card">
-        <div class="stat-value">{{ stats.totalProcessed }}</div>
-        <div class="stat-label">总处理数</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value stat-success">{{ stats.successCount }}</div>
-        <div class="stat-label">成功</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value stat-partial">{{ stats.partialCount }}</div>
-        <div class="stat-label">部分成功</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value stat-failed">{{ stats.failedCount }}</div>
-        <div class="stat-label">失败</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value stat-skipped">{{ stats.skippedCount }}</div>
-        <div class="stat-label">跳过</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{{ formatBytes(stats.totalSavedBytes) }}</div>
-        <div class="stat-label">节省空间</div>
-      </div>
+      <StatCard label="总处理数" :value="stats.totalProcessed" />
+      <StatCard label="成功" :value="stats.successCount" tone="success" />
+      <StatCard label="部分成功" :value="stats.partialCount" tone="warning" />
+      <StatCard label="失败" :value="stats.failedCount" tone="error" />
+      <StatCard label="跳过" :value="stats.skippedCount" />
+      <StatCard label="节省空间" :value="formatBytes(stats.totalSavedBytes)" />
     </div>
 
     <!-- 筛选栏 -->
-    <div class="filter-bar">
-      <input
-        v-model="filters.filename"
-        type="text"
-        placeholder="搜索文件名..."
-        class="filter-input"
-        @input="debouncedFetch"
-      />
-      <select v-model="filters.status" class="filter-select" @change="handleFilterChange">
-        <option value="">全部状态</option>
-        <option value="SUCCESS">成功</option>
-        <option value="PARTIAL">部分成功</option>
-        <option value="FAILED">失败</option>
-        <option value="SKIPPED">跳过</option>
-      </select>
-      <div class="filter-actions">
-        <button type="button" class="btn-refresh" @click="handleRefresh" :disabled="loading">
-          {{ loading ? '加载中...' : '刷新' }}
-        </button>
-        <button type="button" class="btn-clear" @click="handleClearAll" :disabled="clearing">
+    <div class="st-toolbar">
+      <div class="st-toolbar-left">
+        <SearchInput v-model="filters.filename" placeholder="搜索文件名..." @search="handleFilterChange" />
+        <select v-model="filters.status" class="st-select" @change="handleFilterChange">
+          <option value="">全部状态</option>
+          <option value="SUCCESS">成功</option>
+          <option value="PARTIAL">部分成功</option>
+          <option value="FAILED">失败</option>
+          <option value="SKIPPED">跳过</option>
+        </select>
+      </div>
+      <div class="st-toolbar-right">
+        <VButton :loading="loading" @click="handleRefresh">刷新</VButton>
+        <VButton type="danger" ghost :disabled="clearing" @click="handleClearAll">
           {{ clearing ? '清空中...' : '清空日志' }}
-        </button>
+        </VButton>
       </div>
     </div>
 
     <!-- 日志列表 -->
-    <div class="logs-container">
-      <div v-if="loading" class="loading-state">加载中...</div>
+    <div class="logs-container st-card">
+      <VLoading v-if="loading" />
 
-      <div v-else-if="logs.length === 0" class="empty-state">
-        <div class="empty-icon">📋</div>
-        <div class="empty-text">暂无处理日志</div>
-      </div>
+      <VEmpty v-else-if="logs.length === 0" title="暂无处理日志" message="上传图片经过水印或格式转换处理后，处理记录会显示在这里">
+        <template #actions>
+          <VButton @click="handleRefresh">刷新</VButton>
+        </template>
+      </VEmpty>
 
       <template v-else>
-        <div class="table-wrapper">
-          <table class="logs-table">
+        <div class="st-table-wrapper">
+          <table class="st-table logs-table">
             <thead>
               <tr>
                 <th class="col-filename">文件名</th>
@@ -96,9 +73,9 @@
                   </span>
                 </td>
                 <td class="col-status">
-                  <span :class="getStatusBadgeClass(log.spec?.status)">
+                  <StatusBadge :tone="getStatusTone(log.spec?.status)">
                     {{ getStatusText(log.spec?.status) }}
-                  </span>
+                  </StatusBadge>
                 </td>
                 <td class="col-size">{{ formatBytes(log.spec?.originalSize) }}</td>
                 <td class="col-size">{{ formatBytes(log.spec?.resultSize) }}</td>
@@ -121,12 +98,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
 import { API_ENDPOINTS } from '@/constants/api'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { formatBytes, formatTime } from '@/utils/format'
+import StatCard from '@/components/StatCard.vue'
+import StatusBadge from '@/components/StatusBadge.vue'
+import SearchInput from '@/components/SearchInput.vue'
+import type { BadgeTone } from '@/types/ui'
 
 interface ProcessingLogSpec {
   originalFilename: string
@@ -161,19 +142,6 @@ const page = ref(1)
 const pageSize = ref(DEFAULT_PAGE_SIZE)
 const total = ref(0)
 const filters = ref({ filename: '', status: '' })
-
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
-
-const debouncedFetch = () => {
-  if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => {
-    if (page.value !== 1) {
-      page.value = 1
-    } else {
-      fetchLogs()
-    }
-  }, 300)
-}
 
 const fetchLogs = async () => {
   loading.value = true
@@ -245,9 +213,13 @@ const handleClearAll = () => {
   })
 }
 
-const getStatusBadgeClass = (status: string | undefined): string => {
-  if (!status) return 'status-badge'
-  return `status-badge status-${status.toLowerCase()}`
+const getStatusTone = (status: string | undefined): BadgeTone => {
+  switch ((status || '').toUpperCase()) {
+    case 'SUCCESS': return 'success'
+    case 'FAILED': return 'error'
+    case 'PARTIAL': return 'warning'
+    default: return 'neutral'
+  }
 }
 
 const getStatusText = (status: string | undefined): string => {
@@ -263,8 +235,16 @@ const getStatusText = (status: string | undefined): string => {
 }
 
 const getSourceBadgeClass = (source: string | undefined): string => {
-  if (!source) return 'source-badge'
-  return `source-badge source-${source.toLowerCase().replace('-', '')}`
+  if (!source) return 'st-tag'
+  switch (source.toLowerCase()) {
+    case 'console':
+    case 'console-editor': return 'st-tag st-tag--indigo'
+    case 'editor':
+    case 'attachment-manager': return 'st-tag st-tag--green'
+    case 'uc-editor': return 'st-tag st-tag--pink'
+    case 'batch-processing': return 'st-tag st-tag--orange'
+    default: return 'st-tag'
+  }
 }
 
 const getSourceText = (source: string | undefined): string => {
@@ -295,10 +275,6 @@ const getCompressionClass = (spec: ProcessingLogSpec | undefined): string => {
   return 'compression-none'
 }
 
-onUnmounted(() => {
-  if (debounceTimer) clearTimeout(debounceTimer)
-})
-
 watch([page, pageSize], () => {
   fetchLogs()
 })
@@ -320,161 +296,25 @@ onMounted(() => handleRefresh())
   gap: 16px;
 }
 
-.stat-card {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
-  text-align: center;
-}
-
-.stat-value {
-  font-size: 24px;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.stat-success { color: #16a34a; }
-.stat-failed { color: #dc2626; }
-.stat-partial { color: #d97706; }
-.stat-skipped { color: #6b7280; }
-
-.stat-label {
-  font-size: 13px;
-  color: #71717a;
-}
-
-/* 筛选栏 */
-.filter-bar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.filter-input {
-  flex: 1;
-  max-width: 300px;
-  padding: 8px 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 14px;
-}
-
-.filter-input:focus {
-  outline: none;
-  border-color: #4f46e5;
-}
-
-.filter-select {
-  height: 38px;
-  padding: 0 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 14px;
-  background: white;
-  min-width: 130px;
-}
-
-.filter-actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.btn-refresh,
-.btn-clear {
-  height: 38px;
-  padding: 0 16px;
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  border: 1px solid;
-}
-
-.btn-refresh {
-  background: white;
-  color: #374151;
-  border-color: #e5e7eb;
-}
-
-.btn-refresh:hover:not(:disabled) {
-  background: #f9fafb;
-}
-
-.btn-clear {
-  background: #fef2f2;
-  color: #dc2626;
-  border-color: #fecaca;
-}
-
-.btn-clear:hover:not(:disabled) {
-  background: #fee2e2;
-}
-
-.btn-refresh:disabled,
-.btn-clear:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* 日志容器 */
 .logs-container {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
   overflow: hidden;
+  padding-bottom: 4px;
 }
 
-.table-wrapper {
-  overflow-x: auto;
-}
-
-.loading-state,
-.empty-state {
-  padding: 60px 20px;
-  text-align: center;
-  color: #71717a;
-}
-
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.8;
-}
-
-.empty-text {
-  font-size: 14px;
-}
-
-/* 表格 */
+/* 表格：列宽等本地细节（基础样式来自 .st-table） */
 .logs-table {
-  width: 100%;
-  border-collapse: collapse;
   table-layout: fixed;
   min-width: 760px;
 }
 
 .logs-table th,
 .logs-table td {
-  padding: 12px 16px;
-  text-align: left;
-  font-size: 14px;
-  border-bottom: 1px solid #f0f0f0;
-  vertical-align: top;
   white-space: nowrap;
 }
 
-.logs-table th {
-  background: #fafafa;
-  font-weight: 500;
-  font-size: 13px;
-  color: #666;
-}
-
-.logs-table tr:hover {
-  background: #fafafa;
+.logs-table.st-table td {
+  vertical-align: top;
 }
 
 /* 列宽 */
@@ -483,7 +323,7 @@ onMounted(() => handleRefresh())
 .col-status { width: 10%; }
 .col-size { width: 11%; }
 .col-ratio { width: 7%; }
-.col-time { width: 22%; color: #999; font-size: 13px; }
+.col-time { width: 22%; color: var(--st-text-tertiary); font-size: 13px; }
 
 /* 文件名 */
 .filename {
@@ -495,7 +335,7 @@ onMounted(() => handleRefresh())
 
 .filename-result {
   font-size: 12px;
-  color: #10b981;
+  color: var(--st-success-text);
   margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -504,199 +344,31 @@ onMounted(() => handleRefresh())
 
 .error-msg {
   font-size: 11px;
-  color: #ef4444;
+  color: var(--st-error-text);
   margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 状态标签 */
-.status-badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.status-success {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.status-failed {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.status-skipped {
-  background: #f3f4f6;
-  color: #4b5563;
-}
-
-.status-partial {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-/* 来源标签 */
-.source-badge {
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
-  background: #f3f4f6;
-  color: #4b5563;
-}
-
-.source-console {
-  background: #e0e7ff;
-  color: #3730a3;
-}
-
-.source-editor {
-  background: #d1fae5;
-  color: #065f46;
-}
-
-.source-consoleeditor {
-  background: #e0e7ff;
-  color: #3730a3;
-}
-
-.source-uceditor {
-  background: #fce7f3;
-  color: #9d174d;
-}
-
-.source-attachmentmanager {
-  background: #d1fae5;
-  color: #065f46;
-}
-
-.source-batchprocessing {
-  background: #ffedd5;
-  color: #9a3412;
-}
-
 /* 压缩率 */
 .compression-good {
-  color: #16a34a;
+  color: var(--st-success-text);
   font-weight: 500;
 }
 
 .compression-ok {
-  color: #6b7280;
+  color: var(--st-text-secondary);
 }
 
 .compression-none {
-  color: #9ca3af;
-}
-
-/* 分页 */
-.pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-top: 1px solid #f0f0f0;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.page-info {
-  font-size: 13px;
-  color: #666;
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.page-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  background: white;
-  color: #374151;
-  border: 1px solid #e5e7eb;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.page-btn:hover:not(:disabled) {
-  background: #f9fafb;
-}
-
-.page-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.page-num {
-  font-size: 13px;
-  color: #374151;
-  padding: 0 8px;
-}
-
-.page-size {
-  height: 32px;
-  padding: 0 8px;
-  font-size: 13px;
-  border: 1px solid #e5e7eb;
-  border-radius: 4px;
-  background: white;
+  color: var(--st-text-tertiary);
 }
 
 /* 响应式 */
-@media (max-width: 1200px) {
-  .stats-grid {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
 @media (max-width: 768px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
-  }
-  .filter-bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .filter-input {
-    max-width: none;
-    width: 100%;
-  }
-  .filter-actions {
-    margin-left: 0;
-    justify-content: flex-end;
-  }
-}
-
-@media (max-width: 640px) {
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .stat-value {
-    font-size: 18px;
-  }
-
-  .pagination {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .page-info {
-    width: 100%;
-    text-align: center;
   }
 }
 </style>
