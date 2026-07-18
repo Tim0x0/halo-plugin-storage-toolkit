@@ -1,67 +1,55 @@
 <template>
   <div class="duplicate-tab">
     <!-- 操作栏 -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <button class="btn-scan" @click="startScan" :disabled="scanning">
-          <span v-if="scanning">扫描中...</span>
-          <span v-else>扫描重复文件</span>
-        </button>
-        <button class="btn-clear" @click="clearRecords" :disabled="scanning || !stats.lastScanTime">
+    <div class="st-toolbar">
+      <div class="st-toolbar-left">
+        <VButton type="secondary" :loading="scanning" @click="startScan">扫描重复文件</VButton>
+        <VButton type="danger" ghost :disabled="scanning || !stats.lastScanTime" @click="clearRecords">
           清空记录
-        </button>
-        <button
-          class="btn-delete"
-          @click="deleteSelected"
-          :disabled="totalSelectedCount === 0"
+        </VButton>
+        <VButton
           v-if="duplicateGroups.length > 0"
+          type="danger"
+          :disabled="totalSelectedCount === 0"
+          @click="deleteSelected"
         >
           删除选中 ({{ totalSelectedCount }})
-        </button>
+        </VButton>
         <span class="scan-info" v-if="stats.lastScanTime && !scanning">上次扫描：{{ formatTime(stats.lastScanTime) }}</span>
         <span class="scan-info error" v-else-if="stats.phase === 'ERROR'">扫描失败：{{ stats.errorMessage }}</span>
-        <span class="status-hint info" v-if="stats.enableRemoteStorage === false">🌐 仅扫描本地存储</span>
-        <span class="status-hint info" v-else-if="stats.enableRemoteStorage === true">🌐 已启用远程扫描</span>
+        <span class="status-hint" v-if="stats.enableRemoteStorage === false">🌐 仅扫描本地存储</span>
+        <span class="status-hint" v-else-if="stats.enableRemoteStorage === true">🌐 已启用远程扫描</span>
       </div>
     </div>
 
     <!-- 提示 -->
-    <div class="notice info">
-      <span class="notice-icon">💡</span>
-      <span>基于文件 MD5 哈希检测完全相同的文件，可删除冗余副本节省存储空间</span>
-    </div>
+    <VAlert type="info" title="基于文件 MD5 哈希检测完全相同的文件，可删除冗余副本节省存储空间" />
 
     <!-- 扫描进度条 -->
-    <div class="progress-section" v-if="scanning">
-      <div class="progress-header">
-        <span class="progress-text" v-if="stats.totalCount <= 0">准备中...</span>
-        <span class="progress-text" v-else>正在扫描... {{ stats.scannedCount }}/{{ stats.totalCount }}</span>
-        <span class="progress-percent" v-if="stats.totalCount > 0">{{ progressPercent }}%</span>
-      </div>
-      <div class="progress-bar" v-if="stats.totalCount > 0">
-        <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
-      </div>
+    <div class="progress-section st-card" v-if="scanning">
+      <StProgressBar
+        :percent="progressPercent"
+        tone="success"
+        show-label
+        :indeterminate="stats.totalCount <= 0"
+      >
+        <template #label>
+          <span v-if="stats.totalCount <= 0">准备中...</span>
+          <span v-else>正在扫描... {{ stats.scannedCount }}/{{ stats.totalCount }}</span>
+        </template>
+      </StProgressBar>
     </div>
 
     <!-- 统计 -->
     <div class="stats-row">
-      <div class="stat-box">
-        <span class="stat-num">{{ stats.duplicateGroupCount }}</span>
-        <span class="stat-text">重复组</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num">{{ stats.duplicateFileCount }}</span>
-        <span class="stat-text">重复文件</span>
-      </div>
-      <div class="stat-box">
-        <span class="stat-num green">{{ formatBytes(stats.savableSize) }}</span>
-        <span class="stat-text">可节省空间</span>
-      </div>
+      <StatCard label="重复组" :value="stats.duplicateGroupCount" />
+      <StatCard label="重复文件" :value="stats.duplicateFileCount" />
+      <StatCard label="可节省空间" :value="formatBytes(stats.savableSize)" tone="success" />
     </div>
 
     <!-- 重复文件组 -->
     <div class="duplicate-groups" v-if="duplicateGroups.length > 0">
-      <div class="group-card" v-for="group in duplicateGroups" :key="group.md5Hash">
+      <div class="group-card st-card" v-for="group in duplicateGroups" :key="group.md5Hash">
         <div class="group-header">
           <div class="group-info">
             <input
@@ -101,13 +89,11 @@
             </div>
             <div class="file-meta">
               <span class="group-badge" :title="file.groupDisplayName || '未分组'">{{ file.groupDisplayName || '未分组' }}</span>
-              <span class="recommended-badge" v-if="file.recommended">推荐保留</span>
-              <span class="file-refs not-scanned" v-if="file.referenceCount < 0">
-                未扫描
-              </span>
-              <span class="file-refs" v-else :class="file.referenceCount > 0 ? 'has-ref' : 'no-ref'">
+              <StatusBadge v-if="file.recommended" tone="success">推荐保留</StatusBadge>
+              <StatusBadge v-if="file.referenceCount < 0" tone="neutral">未扫描</StatusBadge>
+              <StatusBadge v-else :tone="file.referenceCount > 0 ? 'success' : 'warning'">
                 {{ file.referenceCount }} 次引用
-              </span>
+              </StatusBadge>
               <span class="file-date" v-if="file.uploadTime">{{ formatTime(file.uploadTime) }}</span>
             </div>
           </div>
@@ -119,81 +105,43 @@
     </div>
 
     <!-- 空状态 -->
-    <div class="empty-state" v-else-if="!scanning && stats.phase === 'COMPLETED'">
-      <span class="empty-icon">✨</span>
-      <span class="empty-text">没有发现重复文件</span>
-      <span class="empty-hint">所有文件都是唯一的</span>
-    </div>
+    <VEmpty
+      v-else-if="!scanning && stats.phase === 'COMPLETED'"
+      title="没有发现重复文件"
+      message="所有文件都是唯一的"
+    />
 
     <!-- 未扫描状态 -->
-    <div class="empty-state" v-else-if="!scanning && !stats.lastScanTime">
-      <span class="empty-icon">🔍</span>
-      <span class="empty-text">尚未进行扫描</span>
-      <span class="empty-hint">点击「扫描重复文件」开始检测</span>
-    </div>
+    <VEmpty
+      v-else-if="!scanning && !stats.lastScanTime"
+      title="尚未进行扫描"
+      message="点击「扫描重复文件」开始检测"
+    >
+      <template #actions>
+        <VButton type="secondary" @click="startScan">扫描重复文件</VButton>
+      </template>
+    </VEmpty>
 
     <!-- 预览模态框 -->
-    <div class="modal-overlay" v-if="showPreview" @click.self="showPreview = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3 :title="previewFile?.displayName">{{ previewFile?.displayName }}</h3>
-          <button class="modal-close" @click="showPreview = false">×</button>
-        </div>
-        <div class="modal-body">
-          <!-- 预览区域 -->
-          <div class="preview-area" v-if="previewFile?.permalink && isImage(previewFile.mediaType)">
-            <img :src="previewFile.permalink" class="preview-image" />
-          </div>
-          <div class="preview-area preview-placeholder" v-else>
-            <span class="preview-icon">{{ getFileIcon(previewFile?.mediaType ?? null) }}</span>
-          </div>
-
-          <!-- 文件信息 -->
-          <div class="info-section">
-            <div class="info-item">
-              <span class="info-label">大小</span>
-              <span class="info-value">{{ formatBytes(previewFileSize) }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">类型</span>
-              <span class="info-value">{{ previewFile?.mediaType || '未知' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">存储策略</span>
-              <span class="info-value">{{ previewFile?.policyDisplayName || previewFile?.policyName || '默认策略' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">分组</span>
-              <span class="info-value">{{ previewFile?.groupDisplayName || '未分组' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">上传时间</span>
-              <span class="info-value">{{ previewFile?.uploadTime ? formatTime(previewFile.uploadTime) : '-' }}</span>
-            </div>
-            <div class="info-item" v-if="previewFile?.permalink">
-              <span class="info-label">链接</span>
-              <span class="info-value info-url">{{ previewFile.permalink }}</span>
-            </div>
-          </div>
-
-          <!-- 引用列表 -->
-          <ReferenceList :references="previewFile?.references" />
-        </div>
-      </div>
-    </div>
+    <DuplicatePreviewModal
+      v-if="showPreview && previewFile"
+      :file="previewFile"
+      :size="previewFileSize"
+      @close="showPreview = false"
+    />
   </div>
 
   <!-- 删除确认对话框 -->
   <VModal
     v-model:visible="showDeleteDialog"
     :width="480"
-    :closable="true"
-    :mask-closable="true"
+    mount-to-body
+    :layer-closable="true"
     @close="handleDeleteCancel"
   >
     <template #header>确认删除重复附件</template>
     <template #default>
-      <div class="delete-confirm-content">
+      <div class="st-scope delete-confirm-content">
         <!-- 描述内容 -->
         <div class="confirm-description">
           确定要永久删除选中的 <strong>{{ totalSelectedCount }}</strong> 个重复附件文件吗？此操作将删除存储中的文件，不可恢复。
@@ -240,12 +188,15 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { DuplicateStats, DuplicateGroup, DuplicateFile } from '@/types/duplicate'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VPagination, VAlert, VEmpty } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
 import { getFileIcon, isImage } from '@/composables/useReferenceSource'
-import ReferenceList from '@/components/ReferenceList.vue'
+import StatCard from '@/components/StatCard.vue'
+import StatusBadge from '@/components/StatusBadge.vue'
+import StProgressBar from '@/components/StProgressBar.vue'
+import DuplicatePreviewModal from '@/views/panels/components/DuplicatePreviewModal.vue'
 import { utils } from '@halo-dev/ui-shared'
 
 // 删除确认弹窗
@@ -527,140 +478,18 @@ watch([page, pageSize], () => {
   gap: 16px;
 }
 
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.btn-scan {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #18181b;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.btn-scan:disabled { background: #a1a1aa; cursor: not-allowed; }
-
-.btn-clear {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: white;
-  color: #dc2626;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-clear:hover:not(:disabled) {
-  background: #fef2f2;
-  border-color: #f87171;
-}
-
-.btn-clear:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-delete {
-  padding: 8px 16px;
-  font-size: 14px;
-  background: #dc2626;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-delete:hover:not(:disabled) {
-  background: #b91c1c;
-}
-
-.btn-delete:disabled {
-  background: #fca5a5;
-  cursor: not-allowed;
-}
-
-.scan-info { font-size: 13px; color: #71717a; }
-.scan-info.error { color: #dc2626; }
+.scan-info { font-size: 13px; color: var(--st-text-secondary); }
+.scan-info.error { color: var(--st-error-text); }
 
 .status-hint {
   font-size: 13px;
   font-weight: 500;
+  color: var(--st-info-text);
 }
 
-.status-hint.info {
-  color: #2563eb;
-}
-
-/* 进度条 */
+/* 进度条容器（外观由 .st-card 提供，此处只补内边距） */
 .progress-section {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
   padding: 16px;
-}
-
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.progress-text {
-  font-size: 13px;
-  color: #18181b;
-}
-
-.progress-percent {
-  font-size: 13px;
-  color: #16a34a;
-  font-weight: 500;
-}
-
-.progress-bar {
-  height: 6px;
-  background: #f3f4f6;
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: #16a34a;
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.notice.info {
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.notice.error {
-  background: #fef2f2;
-  color: #dc2626;
 }
 
 .stats-row {
@@ -669,35 +498,14 @@ watch([page, pageSize], () => {
   gap: 12px;
 }
 
-.stat-box {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
-  text-align: center;
-}
-
-.stat-num {
-  display: block;
-  font-size: 24px;
-  font-weight: 600;
-  color: #18181b;
-}
-
-.stat-num.green { color: #16a34a; }
-
-.stat-text { font-size: 13px; color: #71717a; margin-top: 4px; }
-
 .duplicate-groups {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+/* 分组卡片外观由 .st-card 提供，此处保留圆角裁剪 */
 .group-card {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -706,8 +514,8 @@ watch([page, pageSize], () => {
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  background: #fafafa;
-  border-bottom: 1px solid #f4f4f5;
+  background: var(--st-bg-hover);
+  border-bottom: 1px solid var(--st-border-subtle);
 }
 
 .group-info {
@@ -720,19 +528,20 @@ watch([page, pageSize], () => {
   width: 16px;
   height: 16px;
   cursor: pointer;
+  accent-color: var(--st-color-primary);
 }
 
 .group-hash {
   font-family: monospace;
   font-size: 13px;
-  color: #71717a;
-  background: #f4f4f5;
+  color: var(--st-text-secondary);
+  background: var(--st-bg-muted);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--st-radius-sm);
 }
 
-.group-count { font-size: 14px; color: #18181b; font-weight: 500; }
-.group-size { font-size: 13px; color: #71717a; }
+.group-count { font-size: 14px; color: var(--st-text-primary); font-weight: 500; }
+.group-size { font-size: 13px; color: var(--st-text-secondary); }
 
 .group-files {
   display: flex;
@@ -744,21 +553,23 @@ watch([page, pageSize], () => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  border-bottom: 1px solid #f4f4f5;
+  border-bottom: 1px solid var(--st-border-subtle);
+  transition: background var(--st-duration) var(--st-ease);
 }
 
 .file-item:last-child { border-bottom: none; }
 
-.file-item.selected {
-  background: #eff6ff;
-}
-
-.file-item.selected:hover {
-  background: #dbeafe;
+.file-item:hover {
+  background: var(--st-bg-hover);
 }
 
 .file-item.recommended {
-  background: #f0fdf4;
+  background: var(--st-success-bg);
+}
+
+.file-item.selected,
+.file-item.selected:hover {
+  background: var(--st-color-primary-soft);
 }
 
 .file-main {
@@ -775,6 +586,7 @@ watch([page, pageSize], () => {
   height: 16px;
   cursor: pointer;
   flex-shrink: 0;
+  accent-color: var(--st-color-primary);
 }
 
 .file-checkbox:disabled {
@@ -790,36 +602,36 @@ watch([page, pageSize], () => {
   width: 32px;
   height: 32px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--st-radius-sm);
   flex-shrink: 0;
 }
 .file-name {
   font-size: 14px;
-  color: #18181b;
+  color: var(--st-text-primary);
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--st-duration) var(--st-ease);
+}
+
+.file-name:hover {
+  color: var(--st-color-primary);
 }
 
 .group-badge {
   font-size: 11px;
   padding: 2px 6px;
-  background: #f4f4f5;
-  color: #71717a;
-  border-radius: 4px;
+  background: var(--st-bg-muted);
+  color: var(--st-text-secondary);
+  border-radius: var(--st-radius-sm);
   flex-shrink: 0;
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.recommended-badge {
-  font-size: 11px;
-  padding: 2px 6px;
-  background: #059669;
-  color: white;
-  border-radius: 4px;
-  flex-shrink: 0;
 }
 
 .file-meta {
@@ -829,262 +641,7 @@ watch([page, pageSize], () => {
   flex-shrink: 0;
 }
 
-.file-refs {
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.file-refs.has-ref { background: #dcfce7; color: #166534; }
-.file-refs.no-ref { background: #fef3c7; color: #92400e; }
-.file-refs.not-scanned { background: #f3f4f6; color: #4b5563; }
-
-.file-date { font-size: 13px; color: #a1a1aa; }
-
-/* 分页 */
-.pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  background: white;
-  border-radius: 8px;
-}
-
-.page-info {
-  font-size: 13px;
-  color: #71717a;
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.page-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-  background: white;
-  color: #374151;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.page-btn:hover:not(:disabled) {
-  background: #f9fafb;
-}
-
-.page-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.page-num {
-  font-size: 13px;
-  color: #374151;
-  padding: 0 8px;
-}
-
-.page-size {
-  height: 32px;
-  padding: 0 8px;
-  font-size: 13px;
-  border: 1px solid #e4e4e7;
-  border-radius: 4px;
-  background: white;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px;
-  background: white;
-  border-radius: 8px;
-}
-
-.empty-icon { font-size: 48px; margin-bottom: 16px; }
-.empty-text { font-size: 16px; color: #18181b; }
-.empty-hint { font-size: 13px; color: #a1a1aa; margin-top: 4px; }
-
-/* 模态框 */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: white;
-  border-radius: 8px;
-  width: 90%;
-  max-width: 560px;
-  max-height: 85vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: #18181b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  padding-right: 12px;
-}
-
-.modal-close {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: none;
-  font-size: 20px;
-  color: #a1a1aa;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.modal-close:hover {
-  background: #f4f4f5;
-  color: #71717a;
-}
-
-.modal-body {
-  padding: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.modal-body:hover {
-  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-}
-
-.modal-body::-webkit-scrollbar {
-  width: 6px;
-}
-
-.modal-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.modal-body::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 3px;
-}
-
-.modal-body:hover::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-/* 预览区域 */
-.preview-area {
-  width: 100%;
-  height: 200px;
-  background: #fafafa;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.preview-area .preview-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-.preview-area.preview-placeholder {
-  background: #f4f4f5;
-}
-
-.preview-icon {
-  font-size: 48px;
-  opacity: 0.4;
-}
-
-/* 文件信息区域 */
-.info-section {
-  padding: 16px;
-  border-bottom: 1px solid #f4f4f5;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 8px 0;
-}
-
-.info-item:first-child {
-  padding-top: 0;
-}
-
-.info-item:last-child {
-  padding-bottom: 0;
-}
-
-.info-label {
-  font-size: 13px;
-  color: #71717a;
-  flex-shrink: 0;
-}
-
-.info-value {
-  font-size: 13px;
-  color: #18181b;
-  text-align: right;
-  word-break: break-all;
-  margin-left: 16px;
-}
-
-.info-value.info-url {
-  font-size: 12px;
-  color: #71717a;
-}
-
-.file-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  transition: color 0.15s;
-  cursor: pointer;
-}
-
-.file-name:hover {
-  color: #2563eb;
-}
+.file-date { font-size: 13px; color: var(--st-text-tertiary); }
 
 /* 删除确认对话框样式 */
 .delete-confirm-content {
@@ -1093,7 +650,7 @@ watch([page, pageSize], () => {
 
 .confirm-description {
   font-size: 14px;
-  color: #374151;
+  color: var(--st-text-primary);
   line-height: 1.5;
   margin-bottom: 12px;
 }
@@ -1107,16 +664,16 @@ watch([page, pageSize], () => {
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: var(--st-radius-md);
   font-size: 13px;
   line-height: 1.5;
   margin-top: 8px;
 }
 
 .confirm-alert-beta {
-  background: #fffbeb;
-  color: #92400e;
-  border: 1px solid #fcd34d;
+  background: var(--st-warning-bg);
+  color: var(--st-warning-text-strong);
+  border: 1px solid var(--st-warning-border);
 }
 
 .alert-icon {
@@ -1127,9 +684,9 @@ watch([page, pageSize], () => {
 .confirm-option {
   margin-top: 16px;
   padding: 12px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  background: var(--st-bg-hover);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
 }
 
 .confirm-checkbox-label {
@@ -1146,8 +703,9 @@ watch([page, pageSize], () => {
   cursor: pointer;
   margin-top: 1px;
   flex-shrink: 0;
-  border-radius: 4px;
-  border: 1px solid #d1d5db;
+  border-radius: var(--st-radius-sm);
+  border: 1px solid var(--st-border-input);
+  accent-color: var(--st-color-primary);
 }
 
 .confirm-checkbox-text {
@@ -1159,19 +717,19 @@ watch([page, pageSize], () => {
 .checkbox-main {
   font-size: 14px;
   font-weight: 500;
-  color: #d97706;
+  color: var(--st-warning-text);
 }
 
 .checkbox-sub {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--st-text-secondary);
 }
 
 .confirm-option-hint {
   margin-top: 8px;
   padding-left: 24px;
   font-size: 12px;
-  color: #b45309;
+  color: var(--st-warning-text-strong);
 }
 
 .confirm-tip {
@@ -1180,7 +738,7 @@ watch([page, pageSize], () => {
   gap: 6px;
   margin-top: 12px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--st-text-secondary);
 }
 
 .confirm-footer {
@@ -1192,15 +750,6 @@ watch([page, pageSize], () => {
 
 /* 响应式 */
 @media (max-width: 768px) {
-  .toolbar {
-    flex-wrap: wrap;
-  }
-
-  .toolbar-left {
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
   .stats-row {
     grid-template-columns: 1fr;
   }
@@ -1232,26 +781,6 @@ watch([page, pageSize], () => {
 }
 
 @media (max-width: 640px) {
-  .pagination {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .page-info {
-    width: 100%;
-    text-align: center;
-  }
-
-  .modal-content {
-    max-width: 95%;
-    margin: 10px;
-  }
-
-  .stat-num {
-    font-size: 18px;
-  }
-
   .group-badge {
     max-width: 80px;
   }
