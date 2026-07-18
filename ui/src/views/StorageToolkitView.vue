@@ -1,5 +1,5 @@
 <template>
-  <div class="toolkit-wrapper">
+  <div class="toolkit-wrapper st-scope">
     <VPageHeader title="存储工具箱">
       <template #icon>
         <IconFolder class="mr-2 self-center" />

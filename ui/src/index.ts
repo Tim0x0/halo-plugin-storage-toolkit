@@ -1,6 +1,8 @@
 import { definePlugin } from '@halo-dev/ui-shared'
 import { IconFolder } from '@halo-dev/components'
 import { markRaw } from 'vue'
+import './styles/tokens.css'
+import './styles/shared.css'
 
 export default definePlugin({
   components: {},

@@ -1,0 +1,163 @@
+/**
+ * Storage Toolkit 共享样式类
+ *
+ * 所有类名带 .st- 前缀且嵌套在 .st-scope 下，防止泄漏到 Halo Console 全局。
+ * 消费 tokens.css 变量，禁止在本文件硬编码色值。
+ */
+
+/* ===== 卡片 ===== */
+.st-scope .st-card {
+  background: var(--st-bg-surface);
+  border: 1px solid var(--st-border-card);
+  border-radius: var(--st-radius-lg);
+  box-shadow: var(--st-shadow-card);
+}
+
+.st-scope .st-card--hover {
+  transition: var(--st-transition);
+}
+
+.st-scope .st-card--hover:hover {
+  box-shadow: var(--st-shadow-card-hover);
+}
+
+/* ===== 表格（收编 .data-table / .logs-table 两套） ===== */
+.st-scope .st-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.st-scope .st-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--st-text-secondary);
+  background: var(--st-bg-hover);
+  border-bottom: 1px solid var(--st-border);
+  white-space: nowrap;
+}
+
+.st-scope .st-table td {
+  padding: 12px 16px;
+  color: var(--st-text-primary);
+  border-bottom: 1px solid var(--st-border-subtle);
+  vertical-align: middle;
+}
+
+.st-scope .st-table tbody tr {
+  transition: background var(--st-duration) var(--st-ease);
+}
+
+.st-scope .st-table tbody tr:hover {
+  background: var(--st-bg-hover);
+}
+
+.st-scope .st-table tbody tr.st-table-row--selected {
+  background: var(--st-color-primary-soft);
+}
+
+.st-scope .st-table tbody tr.st-table-row--highlighted {
+  background: var(--st-warning-bg);
+}
+
+.st-scope .st-table th.st-th--sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.st-scope .st-table th.st-th--sortable:hover {
+  background: var(--st-bg-muted);
+}
+
+.st-scope .st-table-wrapper {
+  overflow-x: auto;
+}
+
+/* ===== 工具栏 / 筛选栏 ===== */
+.st-scope .st-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.st-scope .st-toolbar-left,
+.st-scope .st-toolbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 原生 select 的 token 化外观（搜索框由 SearchInput 组件负责） */
+.st-scope .st-select {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--st-text-primary);
+  background: var(--st-bg-surface);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
+  outline: none;
+  cursor: pointer;
+  transition: var(--st-transition);
+}
+
+.st-scope .st-select:focus {
+  border-color: var(--st-focus-border);
+  box-shadow: var(--st-focus-ring);
+}
+
+/* ===== 彩色标签（收编 3 处重复的 location-tag 体系） ===== */
+.st-scope .st-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  border-radius: var(--st-radius-sm);
+  background: var(--st-tag-neutral-bg);
+  color: var(--st-tag-neutral-text);
+  white-space: nowrap;
+}
+
+.st-scope .st-tag--blue   { background: var(--st-tag-blue-bg);   color: var(--st-tag-blue-text); }
+.st-scope .st-tag--green  { background: var(--st-tag-green-bg);  color: var(--st-tag-green-text); }
+.st-scope .st-tag--teal   { background: var(--st-tag-teal-bg);   color: var(--st-tag-teal-text); }
+.st-scope .st-tag--pink   { background: var(--st-tag-pink-bg);   color: var(--st-tag-pink-text); }
+.st-scope .st-tag--purple { background: var(--st-tag-purple-bg); color: var(--st-tag-purple-text); }
+.st-scope .st-tag--orange { background: var(--st-tag-orange-bg); color: var(--st-tag-orange-text); }
+.st-scope .st-tag--indigo { background: var(--st-tag-indigo-bg); color: var(--st-tag-indigo-text); }
+.st-scope .st-tag--cyan   { background: var(--st-tag-cyan-bg);   color: var(--st-tag-cyan-text); }
+.st-scope .st-tag--amber  { background: var(--st-tag-amber-bg);  color: var(--st-tag-amber-text); }
+.st-scope .st-tag--neutral { background: var(--st-tag-neutral-bg); color: var(--st-tag-neutral-text); }
+
+/* ===== 弹窗内字段详情排版（label / value 对） ===== */
+.st-scope .st-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.st-scope .st-field-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.st-scope .st-field-label {
+  flex-shrink: 0;
+  min-width: 72px;
+  color: var(--st-text-secondary);
+}
+
+.st-scope .st-field-value {
+  color: var(--st-text-primary);
+  word-break: break-all;
+}
