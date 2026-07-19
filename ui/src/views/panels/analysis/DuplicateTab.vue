@@ -140,7 +140,6 @@
     v-model:visible="showDeleteDialog"
     :width="480"
     mount-to-body
-    :layer-closable="true"
     @close="handleDeleteCancel"
   >
     <template #header>确认删除重复附件</template>

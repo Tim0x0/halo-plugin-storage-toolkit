@@ -179,7 +179,6 @@
     v-model:visible="showCustomDialog"
     :width="480"
     mount-to-body
-    :layer-closable="true"
     @close="handleDialogCancel"
   >
     <template #header>{{ getDialogTitle() }}</template>
