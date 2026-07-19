@@ -7,14 +7,14 @@ on:
 
 jobs:
   cd:
-    uses: halo-sigs/reusable-workflows/.github/workflows/plugin-cd.yaml@v3
+    uses: halo-sigs/reusable-workflows/.github/workflows/plugin-cd.yaml@v4
     secrets:
       halo-pat: ${{ secrets.HALO_PAT }}
     permissions:
       contents: write
     with:
       ui-path: "ui"
-      pnpm-version: 9
-      node-version: 22
-      java-version: 21 
+      pnpm-version: "9"
+      node-version: "22"
+      java-version: "21"
       app-id: app-mgxmb5id
