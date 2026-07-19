@@ -3,7 +3,7 @@
     <!-- 操作栏 -->
     <div class="st-toolbar">
       <div class="st-toolbar-left">
-        <VButton type="secondary" :loading="scanning" @click="startScan">扫描断链</VButton>
+        <VButton type="secondary" :loading="scanning" @click="startScan">开始扫描</VButton>
         <VButton type="danger" ghost :disabled="scanning || !stats.lastScanTime" @click="clearRecords">
           清空记录
         </VButton>
@@ -46,6 +46,7 @@
     <!-- 提示 -->
     <VAlert
       type="info"
+      title="检测说明"
       description="扫描内容中引用了不存在附件的链接，与引用统计使用相同的扫描配置"
     />
 
@@ -62,10 +63,10 @@
       <VEmpty
         v-else-if="!stats.lastScanTime && !scanning"
         title="尚未进行扫描"
-        message="点击「扫描断链」开始检测"
+        message="点击「开始扫描」检测内容中的失效链接"
       >
         <template #actions>
-          <VButton type="secondary" :loading="scanning" @click="startScan">扫描断链</VButton>
+          <VButton type="secondary" :loading="scanning" @click="startScan">开始扫描</VButton>
         </template>
       </VEmpty>
 

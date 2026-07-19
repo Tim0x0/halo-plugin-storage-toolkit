@@ -20,6 +20,7 @@
     <!-- 提示信息 -->
     <VAlert
       type="info"
+      title="白名单说明"
       description="白名单用于忽略断链检测中的特定 URL，支持精确匹配和前缀匹配两种模式"
     />
 

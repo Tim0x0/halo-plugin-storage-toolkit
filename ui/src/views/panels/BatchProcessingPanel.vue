@@ -33,12 +33,14 @@
     <VAlert
       v-if="!settings.keepOriginalFile"
       type="warning"
+      title="不保留原图模式已开启"
       description="当前设置为「不保留原图」，处理后的文件将会被重命名，导致原有链接失效！原文件将被删除。"
     />
 
     <!-- 配置说明 -->
     <VAlert
       type="info"
+      title="配置说明"
       description="批量处理使用插件设置中「图片处理」分组的配置（过滤规则、格式转换、水印等），请先在插件设置中配置好处理参数。"
     />
 
@@ -927,11 +929,10 @@ onUnmounted(() => {
 }
 
 .confirm-tip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: block;
   margin-top: 12px;
   font-size: 13px;
+  line-height: 1.6;
   color: var(--st-text-secondary);
 }
 

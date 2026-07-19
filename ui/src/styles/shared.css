@@ -75,6 +75,18 @@
   overflow-x: auto;
 }
 
+/* 卡片内的分页区域：与表格分隔并留出呼吸空间 */
+.st-scope .st-card .pagination {
+  padding: 12px 16px;
+  border-top: 1px solid var(--st-border-subtle);
+}
+
+/* 卡片内的加载/空态给足最小高度，避免塌陷 */
+.st-scope .st-card .loading,
+.st-scope .st-card .empty-wrapper {
+  min-height: 240px;
+}
+
 /* ===== 工具栏 / 筛选栏 ===== */
 .st-scope .st-toolbar {
   display: flex;

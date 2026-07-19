@@ -1,6 +1,5 @@
 <template>
   <VModal
-    :visible="true"
     title="断链详情"
     :width="640"
     mount-to-body

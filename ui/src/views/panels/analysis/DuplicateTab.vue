@@ -3,7 +3,7 @@
     <!-- 操作栏 -->
     <div class="st-toolbar">
       <div class="st-toolbar-left">
-        <VButton type="secondary" :loading="scanning" @click="startScan">扫描重复文件</VButton>
+        <VButton type="secondary" :loading="scanning" @click="startScan">开始扫描</VButton>
         <VButton type="danger" ghost :disabled="scanning || !stats.lastScanTime" @click="clearRecords">
           清空记录
         </VButton>
@@ -23,7 +23,11 @@
     </div>
 
     <!-- 提示 -->
-    <VAlert type="info" title="基于文件 MD5 哈希检测完全相同的文件，可删除冗余副本节省存储空间" />
+    <VAlert
+      type="info"
+      title="检测说明"
+      description="基于文件 MD5 哈希检测完全相同的文件，可删除冗余副本节省存储空间"
+    />
 
     <!-- 扫描进度条 -->
     <div class="progress-section st-card" v-if="scanning">
@@ -115,10 +119,10 @@
     <VEmpty
       v-else-if="!scanning && !stats.lastScanTime"
       title="尚未进行扫描"
-      message="点击「扫描重复文件」开始检测"
+      message="点击「开始扫描」检测重复文件"
     >
       <template #actions>
-        <VButton type="secondary" @click="startScan">扫描重复文件</VButton>
+        <VButton type="secondary" @click="startScan">开始扫描</VButton>
       </template>
     </VEmpty>
 
@@ -733,11 +737,10 @@ watch([page, pageSize], () => {
 }
 
 .confirm-tip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: block;
   margin-top: 12px;
   font-size: 13px;
+  line-height: 1.6;
   color: var(--st-text-secondary);
 }
 

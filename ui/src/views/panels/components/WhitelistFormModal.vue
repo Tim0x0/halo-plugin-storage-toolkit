@@ -1,6 +1,5 @@
 <template>
   <VModal
-    :visible="true"
     title="添加白名单"
     :width="520"
     mount-to-body

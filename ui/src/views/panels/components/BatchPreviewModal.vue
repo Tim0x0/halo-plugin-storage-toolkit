@@ -1,6 +1,5 @@
 <template>
   <VModal
-    :visible="true"
     :title="attachment.displayName"
     :width="600"
     mount-to-body
