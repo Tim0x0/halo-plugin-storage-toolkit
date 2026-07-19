@@ -21,10 +21,10 @@
     <template v-else>
       <!-- 顶部统计 -->
       <div class="stats-grid">
-        <StatCard label="总存储空间" :value="formatBytes(totalSize)" />
-        <StatCard label="附件总数" :value="totalCount.toLocaleString()" />
-        <StatCard label="存储策略" :value="policyCount" />
-        <StatCard label="分组数量" :value="groupCount" />
+        <StatCard label="总存储空间" :value="formatBytes(totalSize)" :icon="IconDatabase2Line" />
+        <StatCard label="附件总数" :value="totalCount.toLocaleString()" :icon="IconDashboard" />
+        <StatCard label="存储策略" :value="policyCount" :icon="IconListSettings" />
+        <StatCard label="分组数量" :value="groupCount" :icon="IconFolder" />
       </div>
 
       <!-- 图表区域 -->
@@ -121,7 +121,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { VAlert, VButton, VEmpty, VLoading } from '@halo-dev/components'
+import { VAlert, VButton, VEmpty, VLoading, IconDatabase2Line, IconDashboard, IconListSettings, IconFolder } from '@halo-dev/components'
 import type { StatisticsData } from '@/types/statistics'
 import { API_ENDPOINTS } from '@/constants/api'
 import { CHART_TYPE_COLORS, CHART_PALETTE, paletteColor } from '@/constants/colors'

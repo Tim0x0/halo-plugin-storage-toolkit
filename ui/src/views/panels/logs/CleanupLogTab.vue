@@ -2,10 +2,10 @@
   <div class="cleanup-log-tab">
     <!-- 统计卡片 -->
     <div class="stats-grid" v-if="stats">
-      <StatCard label="总删除数" :value="stats.totalCount" />
-      <StatCard label="重复文件" :value="stats.duplicateCount" tone="warning" />
-      <StatCard label="未引用文件" :value="stats.unreferencedCount" tone="warning" />
-      <StatCard label="释放空间" :value="formatBytes(stats.freedBytes)" tone="success" />
+      <StatCard label="总删除数" :value="stats.totalCount" :icon="IconDeleteBin" />
+      <StatCard label="重复文件" :value="stats.duplicateCount" tone="warning" :icon="IconGrid" />
+      <StatCard label="未引用文件" :value="stats.unreferencedCount" tone="warning" :icon="IconForbidLine" />
+      <StatCard label="释放空间" :value="formatBytes(stats.freedBytes)" tone="success" :icon="IconSave" />
     </div>
 
     <!-- 筛选栏 -->
@@ -76,7 +76,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VButton, VEmpty, VLoading, VPagination, IconDeleteBin, IconGrid, IconForbidLine, IconSave } from '@halo-dev/components'
 import { API_ENDPOINTS } from '@/constants/api'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { formatBytes, formatTime } from '@/utils/format'

@@ -4,6 +4,14 @@
       <template #icon>
         <IconFolder class="mr-2 self-center" />
       </template>
+      <template #actions>
+        <VButton size="sm" @click="router.push('/plugins/storage-toolkit')">
+          <template #icon>
+            <IconSettings class="h-full w-full" />
+          </template>
+          插件设置
+        </VButton>
+      </template>
     </VPageHeader>
 
     <div class="toolkit-body">
@@ -26,10 +34,12 @@ import {
   VPageHeader,
   IconFolder,
   VLoading,
+  VButton,
   IconDashboard,
   IconSearch,
   IconMagic,
-  IconHistoryLine
+  IconHistoryLine,
+  IconSettings
 } from '@halo-dev/components'
 import PillTabs from '@/components/PillTabs.vue'
 import type { PillTabItem } from '@/types/ui'

@@ -46,14 +46,14 @@
 
     <!-- 统计 -->
     <div class="stats-row">
-      <StatCard label="重复组" :value="stats.duplicateGroupCount" />
-      <StatCard label="重复文件" :value="stats.duplicateFileCount" />
-      <StatCard label="可节省空间" :value="formatBytes(stats.savableSize)" tone="success" />
+      <StatCard label="重复组" :value="stats.duplicateGroupCount" :icon="IconExchange" />
+      <StatCard label="重复文件" :value="stats.duplicateFileCount" :icon="IconGrid" />
+      <StatCard label="可节省空间" :value="formatBytes(stats.savableSize)" tone="success" :icon="IconSave" />
     </div>
 
     <!-- 重复文件组 -->
     <div class="duplicate-groups" v-if="duplicateGroups.length > 0">
-      <div class="group-card st-card" v-for="group in duplicateGroups" :key="group.md5Hash">
+      <div class="group-card st-card st-card--hover" v-for="group in duplicateGroups" :key="group.md5Hash">
         <div class="group-header">
           <div class="group-info">
             <input
@@ -192,7 +192,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { DuplicateStats, DuplicateGroup, DuplicateFile } from '@/types/duplicate'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton, VPagination, VAlert, VEmpty } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VPagination, VAlert, VEmpty, IconExchange, IconGrid, IconSave } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'

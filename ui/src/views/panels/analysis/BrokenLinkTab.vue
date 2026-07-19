@@ -52,8 +52,8 @@
 
     <!-- 统计 -->
     <div class="stats-row">
-      <StatCard label="检查链接数" :value="stats.checkedLinkCount" />
-      <StatCard label="断链数" :value="stats.brokenLinkCount" tone="error" />
+      <StatCard label="检查链接数" :value="stats.checkedLinkCount" :icon="IconLink" />
+      <StatCard label="断链数" :value="stats.brokenLinkCount" tone="error" :icon="IconCloseCircle" />
     </div>
 
     <!-- 断链列表 -->
@@ -166,7 +166,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination, IconLink, IconCloseCircle } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatTime } from '@/utils/format'

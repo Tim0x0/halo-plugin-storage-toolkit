@@ -61,10 +61,10 @@
 
     <!-- 处理结果统计 - 仅在完成后显示 -->
     <div class="stats-row" v-if="showResults">
-      <StatCard label="成功" :value="lastResult.succeeded" tone="success" />
-      <StatCard label="失败" :value="lastResult.failed" tone="error" />
-      <StatCard label="跳过" :value="lastResult.skipped" />
-      <StatCard label="节省空间" :value="formatBytes(lastResult.savedBytes)" tone="success" />
+      <StatCard label="成功" :value="lastResult.succeeded" tone="success" :icon="IconCheckboxCircle" />
+      <StatCard label="失败" :value="lastResult.failed" tone="error" :icon="IconCloseCircle" />
+      <StatCard label="跳过" :value="lastResult.skipped" :icon="IconForbidLine" />
+      <StatCard label="节省空间" :value="formatBytes(lastResult.savedBytes)" tone="success" :icon="IconSave" />
     </div>
 
     <!-- 失败/跳过日志 - 仅在有失败或跳过时显示 -->
@@ -241,7 +241,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton, VPagination, VAlert, VEmpty, VLoading } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VPagination, VAlert, VEmpty, VLoading, IconCheckboxCircle, IconCloseCircle, IconForbidLine, IconSave } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes } from '@/utils/format'
@@ -260,6 +260,8 @@ interface AttachmentItem {
   permalink: string
   groupName: string
   policyName: string
+  /** 删除中（metadata.deletionTimestamp 已设置，等待 Halo GC） */
+  deleting: boolean
 }
 
 interface Progress {
@@ -354,6 +356,8 @@ const policyDisplayName = ref<string | null>(null)
 const groupDisplayName = ref<string | null>(null)
 
 let pollingTimer: ReturnType<typeof setTimeout> | null = null
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+let settleRetries = 0
 
 const progressPercent = computed(() => {
   if (!status.value.progress || status.value.progress.total === 0) return 0
@@ -413,14 +417,37 @@ const fetchAttachments = async () => {
       mediaType: att.spec.mediaType || '',
       permalink: att.status?.permalink || '',
       groupName: att.spec.groupName || '',
-      policyName: att.spec.policyName || ''
+      policyName: att.spec.policyName || '',
+      deleting: !!att.metadata.deletionTimestamp
     }))
     total.value = data.total || 0
+    scheduleSettleRefetch()
   } catch (error) {
     console.error('获取附件列表失败:', error)
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 数据驱动的补拉（对齐 Halo 官方附件列表的 refetchInterval 模式）：
+ * 列表中存在"删除中"或"reconciler 尚未生成 permalink 的图片"时每秒重拉，
+ * 数据稳定即停止；设重试上限防止个别附件永远无 permalink 导致的无限轮询。
+ */
+const hasUnsettledAttachments = () =>
+  attachments.value.some(att => att.deleting || (isImage(att.mediaType) && !att.permalink))
+
+const scheduleSettleRefetch = () => {
+  if (!hasUnsettledAttachments()) {
+    settleRetries = 0
+    return
+  }
+  if (settleTimer || settleRetries >= 10) return
+  settleRetries++
+  settleTimer = setTimeout(() => {
+    settleTimer = null
+    fetchAttachments()
+  }, 1000)
 }
 
 // 开始处理
@@ -546,8 +573,9 @@ const onProcessingComplete = () => {
     logTab.value = 'skipped'
   }
 
-  // 清空选择并刷新列表
+  // 清空选择并刷新列表（列表若含删除中/未就绪条目，fetchAttachments 内部会数据驱动地补拉直至稳定）
   selectedAttachments.value = []
+  settleRetries = 0
   fetchAttachments()
 }
 
@@ -568,6 +596,7 @@ const clearResults = () => {
 const handleRefresh = () => {
   clearResults()
   selectedAttachments.value = []
+  settleRetries = 0
   if (page.value !== 1) {
     page.value = 1
   } else {
@@ -666,6 +695,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopPolling()
+  if (settleTimer) clearTimeout(settleTimer)
 })
 </script>
 

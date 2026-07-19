@@ -2,12 +2,12 @@
   <div class="processing-log-tab">
     <!-- 统计卡片 -->
     <div class="stats-grid" v-if="stats">
-      <StatCard label="总处理数" :value="stats.totalProcessed" />
-      <StatCard label="成功" :value="stats.successCount" tone="success" />
-      <StatCard label="部分成功" :value="stats.partialCount" tone="warning" />
-      <StatCard label="失败" :value="stats.failedCount" tone="error" />
-      <StatCard label="跳过" :value="stats.skippedCount" />
-      <StatCard label="节省空间" :value="formatBytes(stats.totalSavedBytes)" />
+      <StatCard label="总处理数" :value="stats.totalProcessed" :icon="IconDashboard" />
+      <StatCard label="成功" :value="stats.successCount" tone="success" :icon="IconCheckboxCircle" />
+      <StatCard label="部分成功" :value="stats.partialCount" tone="warning" :icon="IconErrorWarning" />
+      <StatCard label="失败" :value="stats.failedCount" tone="error" :icon="IconCloseCircle" />
+      <StatCard label="跳过" :value="stats.skippedCount" :icon="IconForbidLine" />
+      <StatCard label="节省空间" :value="formatBytes(stats.totalSavedBytes)" :icon="IconSave" />
     </div>
 
     <!-- 筛选栏 -->
@@ -100,7 +100,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VButton, VEmpty, VLoading, VPagination, IconDashboard, IconCheckboxCircle, IconErrorWarning, IconCloseCircle, IconForbidLine, IconSave } from '@halo-dev/components'
 import { API_ENDPOINTS } from '@/constants/api'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { formatBytes, formatTime } from '@/utils/format'

@@ -38,10 +38,10 @@
 
     <!-- 统计概览 -->
     <div class="stats-row">
-      <StatCard label="引用率" :value="`${referenceRate}%`" />
-      <StatCard label="已引用" :value="stats.referencedCount" tone="success" />
-      <StatCard label="未引用" :value="stats.unreferencedCount" tone="warning" />
-      <StatCard label="未引用占用" :value="formatBytes(stats.unreferencedSize)" tone="warning" />
+      <StatCard label="引用率" :value="`${referenceRate}%`" :icon="IconDashboard" />
+      <StatCard label="已引用" :value="stats.referencedCount" tone="success" :icon="IconLink" />
+      <StatCard label="未引用" :value="stats.unreferencedCount" tone="warning" :icon="IconForbidLine" />
+      <StatCard label="未引用占用" :value="formatBytes(stats.unreferencedSize)" tone="warning" :icon="IconSave" />
     </div>
 
     <!-- 附件列表 -->
@@ -162,7 +162,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination } from '@halo-dev/components'
+import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination, IconDashboard, IconLink, IconForbidLine, IconSave } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
