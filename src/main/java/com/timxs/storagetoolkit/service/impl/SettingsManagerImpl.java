@@ -483,7 +483,15 @@ public class SettingsManagerImpl implements SettingsManager {
                 String host = getString(setting, "proxyHost", "");
                 int port = getInt(setting, "proxyPort", 7890);
                 port = Math.max(1, Math.min(65535, port));
-                return new ProxySettings(enabled, host, port);
+                // 解析排除主机（按行/逗号分隔）；字段缺失时取与 settings.yaml 一致的默认值
+                String excludedRaw = getString(setting, "proxyExcludedHosts",
+                    "localhost\n127.*\n::1");
+                java.util.List<String> excludedHosts = java.util.Arrays.stream(
+                        excludedRaw.split("[\\r\\n,]+"))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .toList();
+                return new ProxySettings(enabled, host, port, excludedHosts);
             })
             .defaultIfEmpty(ProxySettings.disabled())
             .onErrorReturn(ProxySettings.disabled());

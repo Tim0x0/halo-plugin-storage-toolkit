@@ -142,10 +142,13 @@ public interface SettingsManager {
 
     /**
      * 代理设置
+     *
+     * @param excludedHosts 不走代理的主机名单（支持 * 通配），命中直连
      */
-    record ProxySettings(boolean enabled, String host, int port) {
+    record ProxySettings(boolean enabled, String host, int port,
+                         java.util.List<String> excludedHosts) {
         public static ProxySettings disabled() {
-            return new ProxySettings(false, "", 0);
+            return new ProxySettings(false, "", 0, java.util.List.of());
         }
 
         public boolean isEffective() {

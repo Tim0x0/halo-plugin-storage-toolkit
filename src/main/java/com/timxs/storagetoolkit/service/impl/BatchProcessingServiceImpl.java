@@ -67,6 +67,7 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     private final AttachmentService attachmentService;
     private final run.halo.app.infra.ExternalLinkProcessor externalLinkProcessor;
     private final ReferenceReplacerService referenceReplacerService;
+    private final com.timxs.storagetoolkit.service.support.ProxyRouter proxyRouter;
 
     private final DefaultDataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
@@ -330,14 +331,19 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
      */
     private Mono<byte[]> downloadFile(String permalink) {
         return settingsManager.getDownloadTimeoutSeconds()
-            .flatMap(timeoutSeconds ->
-                Mono.fromCallable(() -> {
+            .zipWith(settingsManager.getProxySettings()
+                .defaultIfEmpty(SettingsManager.ProxySettings.disabled()))
+            .flatMap(tuple -> {
+                int timeoutSeconds = tuple.getT1();
+                SettingsManager.ProxySettings proxySettings = tuple.getT2();
+                return Mono.fromCallable(() -> {
                     String fullUrl = externalLinkProcessor.processLink(permalink);
                     String siteUrl = externalLinkProcessor.processLink("/");
                     HttpURLConnection conn = null;
                     try {
                         URL url = new URL(fullUrl);
-                        conn = (HttpURLConnection) url.openConnection();
+                        conn = (HttpURLConnection) url.openConnection(
+                            proxyRouter.selectForDownload(fullUrl, proxySettings));
                         conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(timeoutSeconds));
                         conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(timeoutSeconds));
                         conn.setRequestMethod("GET");
@@ -359,8 +365,8 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                     }
                 }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
                 .timeout(java.time.Duration.ofSeconds(timeoutSeconds),
-                    Mono.error(new java.util.concurrent.TimeoutException("下载文件超时: " + permalink)))
-            );
+                    Mono.error(new java.util.concurrent.TimeoutException("下载文件超时: " + permalink)));
+            });
     }
 
     /**

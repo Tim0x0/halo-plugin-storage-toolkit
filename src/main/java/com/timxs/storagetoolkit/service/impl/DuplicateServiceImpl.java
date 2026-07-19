@@ -49,6 +49,7 @@ public class DuplicateServiceImpl implements DuplicateService {
     private final SettingsManager settingsManager;
     private final ReferenceReplacerService referenceReplacerService;
     private final CleanupLogService cleanupLogService;
+    private final com.timxs.storagetoolkit.service.support.ProxyRouter proxyRouter;
 
     // 内存中的扫描进度（不持久化，重启后清零）
     private final AtomicInteger scanProgress = new AtomicInteger(0);
@@ -266,14 +267,17 @@ public class DuplicateServiceImpl implements DuplicateService {
      * 流式计算文件 MD5（通过 HTTP 获取文件内容）
      */
     private Mono<String> calculateMd5(String permalink, int timeoutSeconds) {
-        return Mono.fromCallable(() -> {
+        return settingsManager.getProxySettings()
+            .defaultIfEmpty(SettingsManager.ProxySettings.disabled())
+            .flatMap(proxySettings -> Mono.fromCallable(() -> {
             // 使用 ExternalLinkProcessor 将相对路径转为完整 URL
             String fullUrl = externalLinkProcessor.processLink(permalink);
 
             HttpURLConnection conn = null;
             try {
                 URL url = new URL(fullUrl);
-                conn = (HttpURLConnection) url.openConnection();
+                conn = (HttpURLConnection) url.openConnection(
+                    proxyRouter.selectForDownload(fullUrl, proxySettings));
                 // 使用配置的超时时间：连接超时取 1/3，最大 30 秒；读取超时使用完整配置
                 conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(timeoutSeconds));
                 conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(timeoutSeconds));
@@ -305,7 +309,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                     conn.disconnect();
                 }
             }
-        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()));
     }
 
     /**

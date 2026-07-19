@@ -561,7 +561,7 @@ spec:
           name: proxyEnabled
           label: 启用 HTTP 代理
           value: false
-          help: 启用后，断链检测将通过代理服务器发送 HTTP 请求。目前仅断链检测使用此代理。
+          help: 启用后，断链检测、重复文件扫描和批量处理的 HTTP 请求均通过代理服务器发送；命中下方"代理排除主机"名单的地址直连。
 
         - $formkit: text
           if: "$get(proxyEnabled).value"
@@ -580,3 +580,12 @@ spec:
           max: 65535
           validation: required
           help: HTTP 代理端口号（1-65535）
+
+        - $formkit: textarea
+          if: "$get(proxyEnabled).value"
+          name: proxyExcludedHosts
+          label: 代理排除主机
+          value: "localhost\n127.*\n::1"
+          rows: 4
+          placeholder: "每行一个，支持 * 通配"
+          help: 不走代理的主机名，每行一个，支持 * 通配（如 *.internal、10.*）。建议加入本站域名，避免访问本站链接和附件时绕行代理；删除默认的本机地址后，localhost 也将走代理

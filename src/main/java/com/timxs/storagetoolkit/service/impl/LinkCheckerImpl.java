@@ -28,12 +28,15 @@ import java.util.concurrent.TimeoutException;
  */
 @Slf4j
 @Service
+@lombok.RequiredArgsConstructor
 public class LinkCheckerImpl implements LinkChecker {
 
+    private final com.timxs.storagetoolkit.service.support.ProxyRouter proxyRouter;
+
     /**
-     * WebClient 缓存 key，包含超时和代理信息
+     * WebClient 缓存 key，包含超时、代理和直连排除规则信息
      */
-    private record ClientCacheKey(int timeout, String proxyHost, int proxyPort) {
+    private record ClientCacheKey(int timeout, String proxyHost, int proxyPort, String nonProxyHosts) {
     }
 
     /**
@@ -47,9 +50,10 @@ public class LinkCheckerImpl implements LinkChecker {
     private WebClient getWebClient(int timeoutSeconds, SettingsManager.ProxySettings proxySettings) {
         ClientCacheKey key;
         if (proxySettings.isEffective()) {
-            key = new ClientCacheKey(timeoutSeconds, proxySettings.host(), proxySettings.port());
+            key = new ClientCacheKey(timeoutSeconds, proxySettings.host(), proxySettings.port(),
+                proxyRouter.nonProxyHostsRegex(proxySettings));
         } else {
-            key = new ClientCacheKey(timeoutSeconds, "", 0);
+            key = new ClientCacheKey(timeoutSeconds, "", 0, "");
         }
 
         return webClientCache.computeIfAbsent(key, k -> {
@@ -63,8 +67,11 @@ public class LinkCheckerImpl implements LinkChecker {
                     proxy.type(ProxyProvider.Proxy.HTTP)
                         .host(k.proxyHost())
                         .port(k.proxyPort())
+                        // 本站/内网/排除名单命中的 host 直连
+                        .nonProxyHosts(k.nonProxyHosts())
                 );
-                log.info("创建带代理的 WebClient: {}:{}", k.proxyHost(), k.proxyPort());
+                log.info("创建带代理的 WebClient: {}:{}，直连规则: {}", k.proxyHost(), k.proxyPort(),
+                    k.nonProxyHosts());
             }
 
             return WebClient.builder()
