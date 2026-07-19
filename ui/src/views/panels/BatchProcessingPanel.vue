@@ -179,9 +179,9 @@
     v-model:visible="showCustomDialog"
     :width="480"
     mount-to-body
+    :title="getDialogTitle()"
     @close="handleDialogCancel"
   >
-    <template #header>{{ getDialogTitle() }}</template>
     <template #default>
       <div class="st-scope batch-confirm-content">
         <!-- 描述内容 -->

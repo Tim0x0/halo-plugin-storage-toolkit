@@ -140,9 +140,9 @@
     v-model:visible="showDeleteDialog"
     :width="480"
     mount-to-body
+    title="确认删除重复附件"
     @close="handleDeleteCancel"
   >
-    <template #header>确认删除重复附件</template>
     <template #default>
       <div class="st-scope delete-confirm-content">
         <!-- 描述内容 -->
