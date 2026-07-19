@@ -52,10 +52,12 @@
     </div>
 
     <template #footer>
-      <VButton type="secondary" :loading="submitting" @click="submitForm">
-        确认添加
-      </VButton>
-      <VButton @click="$emit('close')">取消</VButton>
+      <VSpace>
+        <VButton type="secondary" :loading="submitting" @click="submitForm">
+          确认添加
+        </VButton>
+        <VButton @click="$emit('close')">取消</VButton>
+      </VSpace>
     </template>
   </VModal>
 </template>
@@ -63,7 +65,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Toast, VModal, VButton } from '@halo-dev/components'
+import { Toast, VModal, VButton, VSpace } from '@halo-dev/components'
 import { API_ENDPOINTS } from '@/constants/api'
 
 const emit = defineEmits<{

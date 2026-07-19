@@ -55,10 +55,12 @@
     </div>
 
     <template #footer>
-      <VButton @click="ignoreSingle">添加到忽略白名单</VButton>
-      <VButton type="secondary" :loading="replacing" @click="handleReplaceClick">
-        替换 URL
-      </VButton>
+      <VSpace>
+        <VButton type="secondary" :loading="replacing" @click="handleReplaceClick">
+          替换 URL
+        </VButton>
+        <VButton @click="ignoreSingle">添加到忽略白名单</VButton>
+      </VSpace>
     </template>
   </VModal>
 </template>
@@ -66,7 +68,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VModal, VButton } from '@halo-dev/components'
+import { Dialog, Toast, VModal, VButton, VSpace } from '@halo-dev/components'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatTime } from '@/utils/format'
 import StatusBadge from '@/components/StatusBadge.vue'
