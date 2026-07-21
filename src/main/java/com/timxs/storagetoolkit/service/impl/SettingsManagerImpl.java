@@ -15,6 +15,7 @@ import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 import run.halo.app.extension.ConfigMap;
 import run.halo.app.extension.ReactiveExtensionClient;
+import run.halo.app.infra.SystemSetting;
 import run.halo.app.plugin.ReactiveSettingFetcher;
 
 import java.util.ArrayList;
@@ -41,11 +42,6 @@ public class SettingsManagerImpl implements SettingsManager {
      * Halo 响应式扩展客户端，用于读取系统配置
      */
     private final ReactiveExtensionClient extensionClient;
-    
-    /**
-     * 系统配置 ConfigMap 名称
-     */
-    private static final String SYSTEM_CONFIG_NAME = "system";
     
     /**
      * JSON 解析器
@@ -245,67 +241,123 @@ public class SettingsManagerImpl implements SettingsManager {
 
     /**
      * 获取管理端附件上传配置
-     * 从 SystemSetting.Attachment.console 读取
+     * 与核心 AttachmentConsoleEndpoint 的解析语义一致
      *
      * @return 附件上传配置
      */
     @Override
     public Mono<AttachmentUploadConfig> getConsoleAttachmentConfig() {
-        return getAttachmentConfig("console");
+        return getAttachmentConfig(false);
     }
 
     /**
      * 获取个人中心附件上传配置
-     * 从 SystemSetting.Attachment.uc 读取
+     * 与核心 AttachmentUcEndpoint 的解析语义一致（含旧版「用户设置」回退）
      *
      * @return 附件上传配置
      */
     @Override
     public Mono<AttachmentUploadConfig> getUcAttachmentConfig() {
-        return getAttachmentConfig("uc");
+        return getAttachmentConfig(true);
     }
 
     /**
-     * 从系统配置读取附件上传配置
+     * 解析编辑器上传实际生效的存储策略与分组。
+     * Halo 2.22+ 系统配置分两层存储：system-default（出厂默认）与 system（用户覆盖），
+     * 核心端点按两层深度合并后的结果解析上传策略，这里必须读取同样的合并结果，
+     * 否则从未在「附件设置」中显式保存过的站点会读到空值，导致策略/分组过滤误判。
      *
-     * @param configKey 配置键（console/uc/comment/avatar）
-     * @return 附件上传配置
+     * @param uc true 表示个人中心（UC）上传，false 表示管理端（Console）上传
+     * @return 附件上传配置（解析不到时策略与分组均为空字符串，此时核心端点同样会拒绝上传）
      */
-    private Mono<AttachmentUploadConfig> getAttachmentConfig(String configKey) {
-        return extensionClient.fetch(ConfigMap.class, SYSTEM_CONFIG_NAME)
-            .map(configMap -> {
-                Map<String, String> data = configMap.getData();
-                if (data == null) {
-                    return AttachmentUploadConfig.empty();
-                }
-                // 读取 attachment 组的配置
-                String attachmentConfig = data.get("attachment");
-                if (attachmentConfig == null || attachmentConfig.isBlank()) {
-                    return AttachmentUploadConfig.empty();
-                }
-                // 解析 JSON
-                try {
-                    JsonNode attachmentNode = OBJECT_MAPPER.readTree(attachmentConfig);
-                    JsonNode configNode = attachmentNode.get(configKey);
-                    if (configNode != null) {
-                        String policyName = "";
-                        String groupName = "";
-                        JsonNode policyNode = configNode.get("policyName");
-                        if (policyNode != null && policyNode.isTextual()) {
-                            policyName = policyNode.asText();
-                        }
-                        JsonNode groupNode = configNode.get("groupName");
-                        if (groupNode != null && groupNode.isTextual()) {
-                            groupName = groupNode.asText();
-                        }
-                        return new AttachmentUploadConfig(policyName, groupName);
-                    }
-                } catch (Exception e) {
-                    log.warn("Failed to parse attachment config: {}", e.getMessage());
-                }
-                return AttachmentUploadConfig.empty();
-            })
-            .defaultIfEmpty(AttachmentUploadConfig.empty());
+    private Mono<AttachmentUploadConfig> getAttachmentConfig(boolean uc) {
+        var defaultData = extensionClient.fetch(ConfigMap.class, SystemSetting.SYSTEM_CONFIG_DEFAULT)
+            .mapNotNull(ConfigMap::getData)
+            .defaultIfEmpty(Map.of());
+        var overrideData = extensionClient.fetch(ConfigMap.class, SystemSetting.SYSTEM_CONFIG)
+            .mapNotNull(ConfigMap::getData)
+            .defaultIfEmpty(Map.of());
+        return Mono.zip(defaultData, overrideData)
+            .map(tuple -> resolveUploadConfig(tuple.getT1(), tuple.getT2(), uc))
+            .doOnNext(config -> log.debug("附件上传配置解析结果 - 来源: {}, policy: '{}', group: '{}'",
+                uc ? "UC" : "Console", config.policyName(), config.groupName()))
+            .onErrorResume(e -> {
+                log.warn("解析附件上传配置失败: {}", e.getMessage());
+                return Mono.just(AttachmentUploadConfig.empty());
+            });
+    }
+
+    /**
+     * 按核心 SystemConfigUtils.deepMerge 的字段级语义合并两层配置并解析：
+     * 覆盖层存在的字段优先（含空串），缺失的字段回退默认层；
+     * 合并后策略为空白时，UC 上传与核心一致回退旧版「用户设置」的 ucAttachmentPolicy
+     */
+    private AttachmentUploadConfig resolveUploadConfig(Map<String, String> defaultData,
+                                                        Map<String, String> overrideData,
+                                                        boolean uc) {
+        var defaultOptions = uploadOptionsOf(defaultData, uc);
+        var overrideOptions = uploadOptionsOf(overrideData, uc);
+
+        String policyName = mergeField(
+            defaultOptions != null ? defaultOptions.policyName() : null,
+            overrideOptions != null ? overrideOptions.policyName() : null);
+        if (StringUtils.hasText(policyName)) {
+            String groupName = mergeField(
+                defaultOptions != null ? defaultOptions.groupName() : null,
+                overrideOptions != null ? overrideOptions.groupName() : null);
+            return new AttachmentUploadConfig(policyName, groupName != null ? groupName : "");
+        }
+
+        if (uc) {
+            String legacyPolicy = mergeField(legacyUcPolicyOf(defaultData), legacyUcPolicyOf(overrideData));
+            if (StringUtils.hasText(legacyPolicy)) {
+                // 旧版设置只有策略没有分组，与核心行为一致
+                return new AttachmentUploadConfig(legacyPolicy, "");
+            }
+        }
+        return AttachmentUploadConfig.empty();
+    }
+
+    /**
+     * 从单层系统配置中解析 attachment 组对应端点的上传选项
+     */
+    private SystemSetting.Attachment.UploadOptions uploadOptionsOf(Map<String, String> data, boolean uc) {
+        var attachment = parseConfigGroup(data, SystemSetting.Attachment.GROUP, SystemSetting.Attachment.class);
+        if (attachment == null) {
+            return null;
+        }
+        return uc ? attachment.uc() : attachment.console();
+    }
+
+    /**
+     * 从单层系统配置中解析旧版「用户设置」的 UC 附件策略
+     */
+    private String legacyUcPolicyOf(Map<String, String> data) {
+        var user = parseConfigGroup(data, SystemSetting.User.GROUP, SystemSetting.User.class);
+        return user != null ? user.getUcAttachmentPolicy() : null;
+    }
+
+    /**
+     * 解析系统配置中某个分组的 JSON
+     */
+    private <T> T parseConfigGroup(Map<String, String> data, String group, Class<T> type) {
+        String json = data.get(group);
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return OBJECT_MAPPER.readValue(json, type);
+        } catch (Exception e) {
+            log.warn("解析系统配置分组 {} 失败: {}", group, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 字段级合并：覆盖层存在该字段（非 null，含空串）则以覆盖层为准，否则回退默认层
+     */
+    private static String mergeField(String defaultValue, String overrideValue) {
+        return overrideValue != null ? overrideValue : defaultValue;
     }
 
     /**
