@@ -286,15 +286,18 @@ public class StorageToolkitPlugin extends BasePlugin {
      * 解决 ImageIO 在创建 Reader/Writer 实例时找不到依赖类的问题
      */
     private void preloadWebPClasses(ClassLoader classLoader) {
+        // usefulness/webp-imageio：Reader/Writer 类名为 WebPReader/WebPWriter（非 WebPImage*）
+        // 预加载 WebPWriteParam 会触发 companion 中的 native 库加载
         String[] classNames = {
             "com.luciad.imageio.webp.WebPReadParam",
             "com.luciad.imageio.webp.WebPWriteParam",
-            "com.luciad.imageio.webp.WebPImageReader",
-            "com.luciad.imageio.webp.WebPImageWriter",
+            "com.luciad.imageio.webp.WebPReader",
+            "com.luciad.imageio.webp.WebPWriter",
             "com.luciad.imageio.webp.WebPDecoderOptions",
-            "com.luciad.imageio.webp.WebPEncoderOptions"
+            "com.luciad.imageio.webp.WebPEncoderOptions",
+            "com.luciad.imageio.webp.CompressionType"
         };
-        
+
         for (String className : classNames) {
             try {
                 Class<?> clazz = classLoader.loadClass(className);

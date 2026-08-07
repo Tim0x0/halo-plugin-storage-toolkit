@@ -18,10 +18,10 @@ dependencies {
     implementation platform('run.halo.tools.platform:plugin:2.23.0')
     compileOnly 'run.halo.app:api'
 
-    // WebP 读写支持（BSD 许可证）
-    implementation 'org.sejda.imageio:webp-imageio:0.1.6'
-    // AVIF 读写支持
-    implementation 'com.github.Tim0x0:avif-imageio:0.1.2'
+    // WebP 读写支持（Apache-2.0，含 Linux/macOS/Windows 多架构 native，含 aarch64）
+    implementation 'com.github.usefulness:webp-imageio:0.10.2'
+    // AVIF 读写支持（含 Windows/Linux arm64、Linux aarch64）
+    implementation 'com.github.Tim0x0:avif-imageio:0.2.0'
 
     testImplementation 'run.halo.app:api'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
