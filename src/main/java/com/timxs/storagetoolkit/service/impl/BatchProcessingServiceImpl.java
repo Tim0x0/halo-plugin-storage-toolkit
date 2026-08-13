@@ -22,15 +22,18 @@ import com.timxs.storagetoolkit.service.support.RetryUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.util.context.Context;
 import run.halo.app.core.extension.attachment.Attachment;
 import run.halo.app.core.extension.attachment.Policy;
@@ -39,9 +42,6 @@ import run.halo.app.extension.ListOptions;
 import run.halo.app.extension.Metadata;
 import run.halo.app.extension.ReactiveExtensionClient;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -51,6 +51,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 批量处理服务实现
@@ -67,12 +68,19 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     private final AttachmentService attachmentService;
     private final run.halo.app.infra.ExternalLinkProcessor externalLinkProcessor;
     private final ReferenceReplacerService referenceReplacerService;
-    private final com.timxs.storagetoolkit.service.support.ProxyRouter proxyRouter;
+    private final com.timxs.storagetoolkit.service.support.ProxiedWebClientFactory webClientFactory;
 
     private final DefaultDataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
-    /** 取消标志 */
+    /** 取消标志（阻止后续任务入队） */
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
+
+    /**
+     * 取消信号：用于真正取消已在执行的下载/处理 Mono。
+     * 仅靠 cancelRequested 只能阻止后续入队，不会触发下游 doOnCancel，
+     * 飞行中的请求会一直跑到自然结束。
+     */
+    private final AtomicReference<Sinks.One<Object>> cancelSinkRef = new AtomicReference<>();
 
     /** 任务 ID 格式 */
     private static final DateTimeFormatter TASK_ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
@@ -117,8 +125,9 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                             }
                         }
 
-                        // 重置取消标志和内存进度
+                        // 重置取消标志、取消信号和内存进度
                         cancelRequested.set(false);
+                        cancelSinkRef.set(Sinks.one());
                         resetMemoryProgress(attachmentNames.size());
 
                         // 生成任务 ID
@@ -235,6 +244,18 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     }
 
     /**
+     * 取消信号：用户点击取消时发射，用于中断已在飞行的下载。
+     * 任务尚未启动时返回 Mono.never()，即不施加取消。
+     */
+    private Mono<Object> cancelSignalMono() {
+        Sinks.One<Object> sink = cancelSinkRef.get();
+        if (sink == null) {
+            return Mono.never();
+        }
+        return sink.asMono();
+    }
+
+    /**
      * 处理单个附件
      */
     private Mono<Void> processOneAttachment(String taskId,
@@ -304,8 +325,11 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
         String permalink = attachment.getStatus().getPermalink();
         long originalSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
 
-        return downloadFile(permalink)
+        return downloadFile(permalink, config)
             .flatMap(imageData -> imageProcessor.process(imageData, displayName, mediaType, config))
+            // 取消只作用于"下载 + 处理"阶段：此阶段无外部副作用，可安全中断（reactor-netty 会关闭 channel）。
+            // 之后的上传 / 引用替换 / 删除原图一旦开始就必须跑完，中途取消会留下半成品。
+            .takeUntilOther(cancelSignalMono())
             .flatMap(result -> {
                 if (result.status() == ProcessingStatus.SKIPPED) {
                     return recordSkipped(attachmentName, displayName, originalSize, result.message());
@@ -320,6 +344,15 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
 
                 return updateAttachmentWithResult(taskId, attachment, result, keepOriginal, savedBytes, replaceReferences, securityContext);
             })
+            // 下载体积超过 maxFileSize 上限。能走到这里说明 attachment.spec.size 与实际文件
+            // 对不上——对得上的话前面 shouldProcess 就已经拦成 SKIPPED 了。归为跳过而非失败，
+            // 并在文案里点出元数据不准，比笼统报一条 DataBufferLimitException 有诊断价值。
+            .onErrorResume(DataBufferLimitException.class, error -> {
+                log.warn("附件 {} 实际体积超过最大限制，附件记录的大小 {} 字节与实际不符",
+                    displayName, originalSize);
+                return recordSkipped(attachmentName, displayName, originalSize,
+                    "实际文件大小超出最大限制（附件记录的大小不准确）");
+            })
             .onErrorResume(error -> {
                 log.warn("下载或处理附件 {} 失败: {}", displayName, error.getMessage());
                 return recordFailed(attachmentName, displayName, error.getMessage());
@@ -327,45 +360,48 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
     }
 
     /**
-     * 下载文件
+     * 下载文件（代理感知；下游取消时 reactor-netty 会直接关闭 channel）
+     *
+     * @param config 用于取 maxFileSize 作为响应体聚合上限，防止大文件 OOM
      */
-    private Mono<byte[]> downloadFile(String permalink) {
+    private Mono<byte[]> downloadFile(String permalink, ProcessingConfig config) {
         return settingsManager.getDownloadTimeoutSeconds()
             .zipWith(settingsManager.getProxySettings()
                 .defaultIfEmpty(SettingsManager.ProxySettings.disabled()))
             .flatMap(tuple -> {
                 int timeoutSeconds = tuple.getT1();
                 SettingsManager.ProxySettings proxySettings = tuple.getT2();
-                return Mono.fromCallable(() -> {
-                    String fullUrl = externalLinkProcessor.processLink(permalink);
-                    String siteUrl = externalLinkProcessor.processLink("/");
-                    HttpURLConnection conn = null;
-                    try {
-                        URL url = new URL(fullUrl);
-                        conn = (HttpURLConnection) url.openConnection(
-                            proxyRouter.selectForDownload(fullUrl, proxySettings));
-                        conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(timeoutSeconds));
-                        conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(timeoutSeconds));
-                        conn.setRequestMethod("GET");
-                        conn.setRequestProperty("User-Agent", SettingsManager.DEFAULT_USER_AGENT);
-                        conn.setRequestProperty("Referer", siteUrl);
+                String fullUrl = externalLinkProcessor.processLink(permalink);
+                String siteUrl = externalLinkProcessor.processLink("/");
 
-                        int responseCode = conn.getResponseCode();
-                        if (responseCode != 200) {
-                            throw new RuntimeException("HTTP " + responseCode);
-                        }
+                // maxFileSize 为 0 表示用户不限制大小
+                long maxFileSize = config.getMaxFileSize();
+                int maxBytes = (maxFileSize > 0 && maxFileSize < Integer.MAX_VALUE)
+                    ? (int) maxFileSize
+                    : Integer.MAX_VALUE;
 
-                        try (InputStream is = conn.getInputStream()) {
-                            return is.readAllBytes();
+                return webClientFactory.get(timeoutSeconds, proxySettings, true)
+                    .get()
+                    .uri(com.timxs.storagetoolkit.service.support.ProxiedWebClientFactory.normalizeUri(fullUrl))
+                    .header(HttpHeaders.USER_AGENT, SettingsManager.DEFAULT_USER_AGENT)
+                    .header(HttpHeaders.REFERER, siteUrl)
+                    .retrieve()
+                    .onStatus(status -> !status.is2xxSuccessful(),
+                        response -> Mono.error(new RuntimeException("HTTP " + response.statusCode().value())))
+                    .bodyToFlux(DataBuffer.class)
+                    // as 而非 transform：join 返回 Mono，用 transform 会被重新包成 Flux
+                    .as(body -> DataBufferUtils.join(body, maxBytes))
+                    .map(buffer -> {
+                        try {
+                            byte[] bytes = new byte[buffer.readableByteCount()];
+                            buffer.read(bytes);
+                            return bytes;
+                        } finally {
+                            DataBufferUtils.release(buffer);
                         }
-                    } finally {
-                        if (conn != null) {
-                            conn.disconnect();
-                        }
-                    }
-                }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
-                .timeout(java.time.Duration.ofSeconds(timeoutSeconds),
-                    Mono.error(new java.util.concurrent.TimeoutException("下载文件超时: " + permalink)));
+                    })
+                    .timeout(java.time.Duration.ofSeconds(timeoutSeconds),
+                        Mono.error(new java.util.concurrent.TimeoutException("下载文件超时: " + permalink)));
             });
     }
 
@@ -652,8 +688,15 @@ public class BatchProcessingServiceImpl implements BatchProcessingService {
                     return Mono.error(new IllegalStateException("任务不在可取消状态"));
                 }
 
-                // 设置取消标志
+                // 设置取消标志（阻止后续入队）+ 发射取消信号（中断飞行中请求）
                 cancelRequested.set(true);
+                Sinks.One<Object> sink = cancelSinkRef.get();
+                if (sink != null) {
+                    Sinks.EmitResult result = sink.tryEmitValue(Boolean.TRUE);
+                    log.info("收到取消请求，已发射取消信号: {}", result);
+                } else {
+                    log.info("收到取消请求，但取消信号尚未初始化");
+                }
 
                 // 立即更新状态为 CANCELLING，让用户知道取消请求已接收
                 status.getStatus().setPhase(Phase.CANCELLING);

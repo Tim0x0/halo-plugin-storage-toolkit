@@ -58,6 +58,8 @@
         </template>
       </VEmpty>
 
+      <VEmpty v-else-if="scanning" title="正在扫描..." message="扫描完成后将显示附件引用情况" />
+
       <VEmpty v-else-if="attachmentList.length === 0" title="没有符合条件的附件" />
 
       <template v-else>
@@ -356,6 +358,12 @@ const fetchReferences = async () => {
 
 const startScan = async () => {
   scanning.value = true
+  // 后端在 performScan 第一步就删光了旧的 AttachmentReference 记录，
+  // 前端不主动清就会一直显示上一次的结果，直到扫描结束才刷新
+  attachmentList.value = []
+  total.value = 0
+  selectedAttachments.value = []
+  page.value = 1
   try {
     await axiosInstance.post(API_ENDPOINTS.REFERENCES_SCAN)
     // 轮询扫描状态
@@ -493,6 +501,9 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   if (newSize !== oldSize) {
     selectedAttachments.value = []
   }
+  // 扫描期间不拉取：后端的旧数据清理是异步的，此时拉取可能把尚未清完的旧数据
+  // 又填回列表。扫描结束时 pollScanStatus 会统一刷新
+  if (scanning.value) return
   fetchReferences()
 })
 

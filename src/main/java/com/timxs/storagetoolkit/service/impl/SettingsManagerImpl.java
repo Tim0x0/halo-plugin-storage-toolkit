@@ -556,12 +556,12 @@ public class SettingsManagerImpl implements SettingsManager {
         return settingFetcher.get("basic")
             .map(setting -> {
                 JsonNode brokenLink = setting.get("brokenLink");
-                int checkTimeout = 5;
+                int checkTimeout = 10;
                 int checkConcurrency = 10;
 
                 if (brokenLink != null) {
-                    checkTimeout = getInt(brokenLink, "checkTimeout", 5);
-                    checkTimeout = Math.max(1, Math.min(30, checkTimeout));
+                    checkTimeout = getInt(brokenLink, "checkTimeout", 10);
+                    checkTimeout = Math.max(1, Math.min(60, checkTimeout));
                     checkConcurrency = getInt(brokenLink, "checkConcurrency", 10);
                     checkConcurrency = Math.max(1, Math.min(20, checkConcurrency));
                 }
@@ -573,10 +573,10 @@ public class SettingsManagerImpl implements SettingsManager {
                 );
             })
             .defaultIfEmpty(new BrokenLinkSettings(
-                true, List.of(), 5, 10
+                true, List.of(), 10, 10
             ))
             .onErrorReturn(new BrokenLinkSettings(
-                true, List.of(), 5, 10
+                true, List.of(), 10, 10
             ));
     }
 
@@ -607,15 +607,15 @@ public class SettingsManagerImpl implements SettingsManager {
                 return new BrokenLinkSettings(
                     checkExternalLinks,
                     attachmentUrlPrefixes,
-                    5,      // checkTimeout 占位
+                    10,     // checkTimeout 占位
                     10      // checkConcurrency 占位
                 );
             })
             .defaultIfEmpty(new BrokenLinkSettings(
-                true, List.of("/upload/"), 5, 10
+                true, List.of("/upload/"), 10, 10
             ))
             .onErrorReturn(new BrokenLinkSettings(
-                true, List.of("/upload/"), 5, 10
+                true, List.of("/upload/"), 10, 10
             ));
     }
 

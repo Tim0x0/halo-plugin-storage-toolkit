@@ -11,9 +11,13 @@ import com.timxs.storagetoolkit.service.CleanupLogService;
 import com.timxs.storagetoolkit.service.DuplicateService;
 import com.timxs.storagetoolkit.service.ReferenceReplacerService;
 import com.timxs.storagetoolkit.service.SettingsManager;
+import com.timxs.storagetoolkit.service.support.ProxiedWebClientFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -25,11 +29,8 @@ import run.halo.app.extension.Metadata;
 import run.halo.app.extension.ReactiveExtensionClient;
 import run.halo.app.infra.ExternalLinkProcessor;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.security.DigestInputStream;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -49,7 +50,7 @@ public class DuplicateServiceImpl implements DuplicateService {
     private final SettingsManager settingsManager;
     private final ReferenceReplacerService referenceReplacerService;
     private final CleanupLogService cleanupLogService;
-    private final com.timxs.storagetoolkit.service.support.ProxyRouter proxyRouter;
+    private final com.timxs.storagetoolkit.service.support.ProxiedWebClientFactory webClientFactory;
 
     // 内存中的扫描进度（不持久化，重启后清零）
     private final AtomicInteger scanProgress = new AtomicInteger(0);
@@ -100,6 +101,14 @@ public class DuplicateServiceImpl implements DuplicateService {
         status.getStatus().setPhase(DuplicateScanStatus.Phase.SCANNING);
         status.getStatus().setStartTime(Instant.now());
         status.getStatus().setErrorMessage(null);
+        // 归零上一次的统计，避免扫描过程中页面继续显示旧结果
+        // （lastScanTime 保留：它表示"上次扫描完成时间"，且扫描失败时前端靠它判断有无历史记录可清）
+        status.getStatus().setScannedCount(0);
+        status.getStatus().setTotalCount(0);
+        status.getStatus().setLocalAttachmentCount(0);
+        status.getStatus().setDuplicateGroupCount(0);
+        status.getStatus().setDuplicateFileCount(0);
+        status.getStatus().setSavableSize(0);
 
         return client.update(status)
             .flatMap(updated -> {
@@ -265,51 +274,55 @@ public class DuplicateServiceImpl implements DuplicateService {
 
     /**
      * 流式计算文件 MD5（通过 HTTP 获取文件内容）
+     * <p>
+     * 响应体以 DataBuffer 逐块喂给 MessageDigest，不聚合、不占内存。
+     * 整体时长上限由调用方的 {@code .timeout(md5TimeoutSeconds)} 施加；
+     * 此处只依赖 WebClient 的 responseTimeout（两次网络读之间的空闲上限）。
+     * <p>
+     * 超时或用户取消时，reactor-netty 会直接关闭 channel，不会留下空挂的代理连接。
+     * <p>
+     * 请求头与批量下载保持一致（User-Agent + Referer），避免站点开启防盗链后
+     * 出现"批量处理正常、重复扫描全部 403"的不一致。
      */
     private Mono<String> calculateMd5(String permalink, int timeoutSeconds) {
         return settingsManager.getProxySettings()
             .defaultIfEmpty(SettingsManager.ProxySettings.disabled())
-            .flatMap(proxySettings -> Mono.fromCallable(() -> {
-            // 使用 ExternalLinkProcessor 将相对路径转为完整 URL
-            String fullUrl = externalLinkProcessor.processLink(permalink);
+            .flatMap(proxySettings -> {
+                // 使用 ExternalLinkProcessor 将相对路径转为完整 URL
+                String fullUrl = externalLinkProcessor.processLink(permalink);
+                String siteUrl = externalLinkProcessor.processLink("/");
 
-            HttpURLConnection conn = null;
-            try {
-                URL url = new URL(fullUrl);
-                conn = (HttpURLConnection) url.openConnection(
-                    proxyRouter.selectForDownload(fullUrl, proxySettings));
-                // 使用配置的超时时间：连接超时取 1/3，最大 30 秒；读取超时使用完整配置
-                conn.setConnectTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.connectTimeoutMillis(timeoutSeconds));
-                conn.setReadTimeout(com.timxs.storagetoolkit.service.support.TimeoutUtils.readTimeoutMillis(timeoutSeconds));
-                conn.setRequestMethod("GET");
+                return webClientFactory.get(timeoutSeconds, proxySettings, true)
+                    .get()
+                    .uri(ProxiedWebClientFactory.normalizeUri(fullUrl))
+                    .header(HttpHeaders.USER_AGENT, SettingsManager.DEFAULT_USER_AGENT)
+                    // 与批量下载保持一致：站点开启防盗链时，缺 Referer 会被判为盗链而 403
+                    .header(HttpHeaders.REFERER, siteUrl)
+                    .retrieve()
+                    .onStatus(status -> !status.is2xxSuccessful(),
+                        response -> Mono.error(new RuntimeException("HTTP " + response.statusCode().value())))
+                    .bodyToFlux(DataBuffer.class)
+                    .reduceWith(DuplicateServiceImpl::newMd5Digest, (digest, buffer) -> {
+                        try {
+                            byte[] chunk = new byte[buffer.readableByteCount()];
+                            buffer.read(chunk);
+                            digest.update(chunk);
+                            return digest;
+                        } finally {
+                            // 必须释放，否则 Netty 直接内存泄漏
+                            DataBufferUtils.release(buffer);
+                        }
+                    })
+                    .map(digest -> HexFormat.of().formatHex(digest.digest()));
+            });
+    }
 
-                int responseCode = conn.getResponseCode();
-                if (responseCode != 200) {
-                    throw new RuntimeException("HTTP " + responseCode);
-                }
-
-                MessageDigest md5Digest = MessageDigest.getInstance("MD5");
-                byte[] buffer = new byte[8192]; // 8KB buffer
-
-                try (InputStream is = conn.getInputStream();
-                     DigestInputStream dis = new DigestInputStream(is, md5Digest)) {
-                    while (dis.read(buffer) != -1) {
-                        // 流式读取，自动更新 digest
-                    }
-                }
-
-                byte[] digest = md5Digest.digest();
-                StringBuilder sb = new StringBuilder();
-                for (byte b : digest) {
-                    sb.append(String.format("%02x", b));
-                }
-                return sb.toString();
-            } finally {
-                if (conn != null) {
-                    conn.disconnect();
-                }
-            }
-        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()));
+    private static MessageDigest newMd5Digest() {
+        try {
+            return MessageDigest.getInstance("MD5");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JVM 不支持 MD5", e);
+        }
     }
 
     /**

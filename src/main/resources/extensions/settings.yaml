@@ -141,10 +141,10 @@ spec:
             - $formkit: number
               name: checkTimeout
               label: HTTP 检测超时（秒）
-              value: 5
+              value: 10
               min: 1
-              max: 30
-              help: 单个链接 HTTP 检测的超时时间（1-30秒）
+              max: 60
+              help: 单个链接 HTTP 检测的超时时间（1-60秒）。境外站点、慢 CDN 或走代理时建议放宽，过小会把正常链接误判为断链；放大则会延长整体扫描时间
 
             - $formkit: number
               name: checkConcurrency

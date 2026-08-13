@@ -116,7 +116,6 @@ public class ContentScanner {
 
     /**
      * 从元素属性中提取 URL
-     * 属性值由引号明确定界，不做边界截断（主流做法：HTML 属性按原文采信）
      */
     private void extractAttribute(Elements elements, String attr, ExtractResult result) {
         for (Element el : elements) {
@@ -141,7 +140,7 @@ public class ContentScanner {
         while (matcher.find()) {
             String url = matcher.group(1);
             if (StringUtils.hasText(url)) {
-                String trimmedUrl = sanitizeUrl(url);
+                String trimmedUrl = url.trim();
                 if (isValidUrl(trimmedUrl)) {
                     classifyUrl(trimmedUrl, result);
                 }
@@ -170,7 +169,7 @@ public class ContentScanner {
         while (httpMatcher.find()) {
             String url = httpMatcher.group(1);
             if (StringUtils.hasText(url)) {
-                String trimmedUrl = sanitizeUrl(url);
+                String trimmedUrl = url.trim();
                 if (isValidUrl(trimmedUrl)) {
                     result.fullUrls().add(trimmedUrl);
                     fullUrlRanges.add(new int[]{httpMatcher.start(), httpMatcher.end()});
@@ -202,7 +201,7 @@ public class ContentScanner {
 
             String url = relativeMatcher.group(1);
             if (StringUtils.hasText(url)) {
-                String trimmedUrl = sanitizeUrl(url);
+                String trimmedUrl = url.trim();
                 if (isValidUrl(trimmedUrl)) {
                     result.relativePaths().add(trimmedUrl);
                 }
@@ -220,7 +219,7 @@ public class ContentScanner {
         while (matcher.find()) {
             String url = matcher.group(group);
             if (StringUtils.hasText(url)) {
-                String trimmedUrl = sanitizeUrl(url);
+                String trimmedUrl = url.trim();
                 if (isValidUrl(trimmedUrl)) {
                     classifyUrl(trimmedUrl, result);
                 }
@@ -253,36 +252,5 @@ public class ContentScanner {
         if (url.startsWith("mailto:")) return false;
         if (url.startsWith("#")) return false;
         return true;
-    }
-
-    /**
-     * 中文/全角标点集合：URL 中不可能合法出现，视为 URL 边界
-     * （只截标点不截汉字——未编码的中文文件名是合法场景）
-     */
-    private static final Pattern CJK_PUNCTUATION_PATTERN =
-        Pattern.compile("[，。！？；：、“”‘’（）《》【】〈〉「」『』…—]");
-
-    /**
-     * 清洗正则提取到的 URL（对齐主流 linkify 边界规则，GFM autolink / linkify-it）：
-     * 1. 在第一个中文/全角标点处截断——如 "https://a.com，说明文字" 会被正则一并捕获；
-     * 2. 剥离结尾的 ASCII 标点（. , ; : ! ?）——正文中 URL 后紧跟句读的常见情形。
-     * 仅用于纯文本/Markdown 的正则提取路径；HTML 属性值有引号定界，不经过此方法。
-     */
-    private static String sanitizeUrl(String url) {
-        String trimmed = url.trim();
-        Matcher matcher = CJK_PUNCTUATION_PATTERN.matcher(trimmed);
-        if (matcher.find()) {
-            trimmed = trimmed.substring(0, matcher.start());
-        }
-        while (!trimmed.isEmpty()) {
-            char last = trimmed.charAt(trimmed.length() - 1);
-            if (last == '.' || last == ',' || last == ';' || last == ':'
-                || last == '!' || last == '?') {
-                trimmed = trimmed.substring(0, trimmed.length() - 1);
-            } else {
-                break;
-            }
-        }
-        return trimmed.trim();
     }
 }

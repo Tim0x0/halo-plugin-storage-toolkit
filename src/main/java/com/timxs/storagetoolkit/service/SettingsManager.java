@@ -129,7 +129,7 @@ public interface SettingsManager {
         int checkConcurrency
     ) {
         public static BrokenLinkSettings defaultSettings() {
-            return new BrokenLinkSettings(true, java.util.List.of("/upload/"), 5, 10);
+            return new BrokenLinkSettings(true, java.util.List.of("/upload/"), 10, 10);
         }
     }
 

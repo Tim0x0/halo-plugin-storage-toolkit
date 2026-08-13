@@ -14,6 +14,7 @@ import com.timxs.storagetoolkit.service.SettingsManager;
 import com.timxs.storagetoolkit.service.WhitelistService;
 import com.timxs.storagetoolkit.service.support.BrokenLinkDetector;
 import com.timxs.storagetoolkit.service.support.ReferenceScanContext;
+import com.timxs.storagetoolkit.service.support.RetryUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -128,8 +129,25 @@ public class ReferenceServiceImpl implements ReferenceService {
         status.getStatus().setPhase(ReferenceScanStatus.Phase.SCANNING);
         status.getStatus().setStartTime(Instant.now());
         status.getStatus().setErrorMessage(null);
+        // 归零上一次的统计，避免扫描过程中页面继续显示旧结果
+        // （lastScanTime 保留：它表示"上次扫描完成时间"）
+        status.getStatus().setTotalAttachments(0);
+        status.getStatus().setReferencedCount(0);
+        status.getStatus().setUnreferencedCount(0);
+        status.getStatus().setUnreferencedSize(0);
 
         return client.update(status)
+            // 断链检测与引用扫描是同一次扫描，其状态同样要在开始时归零。
+            // 必须非致命：此时 phase=SCANNING 已落库且 scanningFlag=1，
+            // 一旦这里抛错就走不到下面启动 performScan，flag 永远不会被 doFinally 清零，
+            // 守卫逻辑会把这个组合判定为"扫描正在进行中"，用户再也无法触发扫描。
+            .flatMap(updated -> resetBrokenLinkScanStatus()
+                .retryWhen(RetryUtils.optimisticLockRetry())
+                .onErrorResume(e -> {
+                    log.warn("重置断链扫描状态失败，本次扫描期间将继续显示上次的断链统计: {}", e.getMessage());
+                    return Mono.empty();
+                })
+                .thenReturn(updated))
             .flatMap(updated -> {
                 // 异步执行扫描
                 performScan(updated)
@@ -1029,6 +1047,38 @@ public class ReferenceServiceImpl implements ReferenceService {
                     brokenLinkCount.get()
                 ).then(Mono.just(updatedStatus))
             );
+    }
+
+    /**
+     * 扫描开始时重置断链扫描状态。
+     * <p>
+     * 断链检测没有独立的扫描流程，它随引用扫描一起产出，因此其状态原先只在扫描
+     * 结束时才写入——导致整个扫描过程中页面显示的仍是上一次的断链统计。
+     * 这里把计数归零并置为 SCANNING，前端轮询 phase 才能正确反映"扫描中"。
+     * lastScanTime 保留，表示上次扫描完成时间。
+     */
+    private Mono<Void> resetBrokenLinkScanStatus() {
+        return client.fetch(BrokenLinkScanStatus.class, BrokenLinkScanStatus.SINGLETON_NAME)
+            .switchIfEmpty(Mono.defer(() -> {
+                BrokenLinkScanStatus status = new BrokenLinkScanStatus();
+                status.setMetadata(new Metadata());
+                status.getMetadata().setName(BrokenLinkScanStatus.SINGLETON_NAME);
+                status.setStatus(new BrokenLinkScanStatus.BrokenLinkScanStatusStatus());
+                return client.create(status);
+            }))
+            .flatMap(status -> {
+                if (status.getStatus() == null) {
+                    status.setStatus(new BrokenLinkScanStatus.BrokenLinkScanStatusStatus());
+                }
+                status.getStatus().setPhase(BrokenLinkScanStatus.Phase.SCANNING);
+                status.getStatus().setStartTime(Instant.now());
+                status.getStatus().setScannedContentCount(0);
+                status.getStatus().setCheckedLinkCount(0);
+                status.getStatus().setBrokenLinkCount(0);
+                status.getStatus().setErrorMessage(null);
+                return client.update(status);
+            })
+            .then();
     }
 
     /**

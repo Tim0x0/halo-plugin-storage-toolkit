@@ -1,62 +1,26 @@
 package com.timxs.storagetoolkit.service.support;
 
 import com.timxs.storagetoolkit.service.SettingsManager;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-import java.net.InetSocketAddress;
-import java.net.Proxy;
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * 代理路由：按目标 host 决定"直连"还是"走代理"（NO_PROXY 语义）。
- * 直连规则完全由"代理排除主机"配置决定（默认值为 localhost/环回，
- * 与 JVM http.nonProxyHosts 默认值一致），本站域名由用户按需加入名单。
+ * 代理路由：把"代理排除主机"配置翻译成 Reactor Netty 的 nonProxyHosts 正则（NO_PROXY 语义）。
+ * 直连规则完全由该配置决定（默认值为 localhost/环回，与 JVM http.nonProxyHosts 默认值一致），
+ * 本站域名由用户按需加入名单。
+ * <p>
+ * 按 host 的直连判定交给 Reactor Netty 的 ProxyProvider 执行，本类只负责生成规则。
  */
-@Slf4j
 @Component
 public class ProxyRouter {
 
     /**
-     * 判断给定完整 URL 是否应绕过代理直连
-     *
-     * @param fullUrl       完整 URL
-     * @param excludedHosts 用户配置的排除主机（可含 * 通配）
-     */
-    public boolean shouldBypass(String fullUrl, List<String> excludedHosts) {
-        String host = extractHost(fullUrl);
-        if (!StringUtils.hasText(host)) {
-            // 解析不出 host（相对路径等），按本站处理，直连
-            return true;
-        }
-        return Pattern.compile(buildBypassRegex(excludedHosts), Pattern.CASE_INSENSITIVE)
-            .matcher(host)
-            .matches();
-    }
-
-    /**
-     * 为附件下载选择代理
-     *
-     * @return java.net.Proxy，直连时返回 Proxy.NO_PROXY
-     */
-    public Proxy selectForDownload(String fullUrl, SettingsManager.ProxySettings settings) {
-        if (settings == null || !settings.isEffective()) {
-            return Proxy.NO_PROXY;
-        }
-        if (shouldBypass(fullUrl, settings.excludedHosts())) {
-            return Proxy.NO_PROXY;
-        }
-        log.debug("附件下载走代理: {} -> {}:{}", fullUrl, settings.host(), settings.port());
-        return new Proxy(Proxy.Type.HTTP, new InetSocketAddress(settings.host(), settings.port()));
-    }
-
-    /**
-     * 构建 Reactor Netty ProxyProvider.nonProxyHosts 所需的 host 匹配正则
-     * （断链检测的 WebClient 用，命中的 host 直连）
+     * 构建 Reactor Netty {@code ProxyProvider.nonProxyHosts} 所需的 host 匹配正则
+     * （所有出站 WebClient 共用，命中的 host 直连）
      */
     public String nonProxyHostsRegex(SettingsManager.ProxySettings settings) {
         List<String> excluded = settings == null ? List.of() : settings.excludedHosts();
@@ -82,20 +46,6 @@ public class ProxyRouter {
             return "(?!)";
         }
         return "(" + String.join("|", parts) + ")";
-    }
-
-    /**
-     * 从 URL 中提取 host（解析失败返回 null）
-     */
-    private static String extractHost(String url) {
-        if (!StringUtils.hasText(url)) {
-            return null;
-        }
-        try {
-            return URI.create(url.trim()).getHost();
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     /**

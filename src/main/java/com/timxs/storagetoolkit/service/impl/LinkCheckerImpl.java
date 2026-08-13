@@ -2,187 +2,103 @@ package com.timxs.storagetoolkit.service.impl;
 
 import com.timxs.storagetoolkit.service.LinkChecker;
 import com.timxs.storagetoolkit.service.SettingsManager;
-import com.timxs.storagetoolkit.service.support.TimeoutUtils;
-import io.netty.channel.ChannelOption;
+import com.timxs.storagetoolkit.service.support.ProxiedWebClientFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatusCode;
-import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import org.springframework.web.util.UriComponentsBuilder;
-import org.springframework.web.util.UriUtils;
 import reactor.core.publisher.Mono;
-import reactor.netty.http.client.HttpClient;
-import reactor.netty.transport.ProxyProvider;
 
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 
 /**
- * 链接检查服务实现类
+ * 链接检查服务实现。
+ * <p>
+ * WebClient 由 {@link ProxiedWebClientFactory} 统一提供（含代理、连接池与超时）。
+ * 检测不跟随重定向：3xx 本身即视为链接有效。
  */
 @Slf4j
 @Service
 @lombok.RequiredArgsConstructor
 public class LinkCheckerImpl implements LinkChecker {
 
-    private final com.timxs.storagetoolkit.service.support.ProxyRouter proxyRouter;
-
-    /**
-     * WebClient 缓存 key，包含超时、代理和直连排除规则信息
-     */
-    private record ClientCacheKey(int timeout, String proxyHost, int proxyPort, String nonProxyHosts) {
-    }
-
-    /**
-     * 按超时时间和代理配置缓存 WebClient 实例
-     */
-    private final ConcurrentHashMap<ClientCacheKey, WebClient> webClientCache = new ConcurrentHashMap<>();
-
-    /**
-     * 获取或创建配置了底层 HTTP 超时和代理的 WebClient
-     */
-    private WebClient getWebClient(int timeoutSeconds, SettingsManager.ProxySettings proxySettings) {
-        ClientCacheKey key;
-        if (proxySettings.isEffective()) {
-            key = new ClientCacheKey(timeoutSeconds, proxySettings.host(), proxySettings.port(),
-                proxyRouter.nonProxyHostsRegex(proxySettings));
-        } else {
-            key = new ClientCacheKey(timeoutSeconds, "", 0, "");
-        }
-
-        return webClientCache.computeIfAbsent(key, k -> {
-            HttpClient httpClient = HttpClient.create()
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
-                    TimeoutUtils.connectTimeoutMillis(k.timeout()))
-                .responseTimeout(Duration.ofSeconds(k.timeout()));
-
-            if (!k.proxyHost().isEmpty() && k.proxyPort() > 0) {
-                httpClient = httpClient.proxy(proxy ->
-                    proxy.type(ProxyProvider.Proxy.HTTP)
-                        .host(k.proxyHost())
-                        .port(k.proxyPort())
-                        // 本站/内网/排除名单命中的 host 直连
-                        .nonProxyHosts(k.nonProxyHosts())
-                );
-                log.info("创建带代理的 WebClient: {}:{}，直连规则: {}", k.proxyHost(), k.proxyPort(),
-                    k.nonProxyHosts());
-            }
-
-            return WebClient.builder()
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(1024 * 1024))
-                .build();
-        });
-    }
+    private final ProxiedWebClientFactory webClientFactory;
 
     @Override
     public Mono<CheckResult> check(String url, String userAgent, int timeoutSeconds,
                                    SettingsManager.ProxySettings proxySettings) {
-        // 先解码再编码，避免已编码的 URL（如 %E4%B8%AD）被双重编码（%25E4%25B8%25AD）
         URI encodedUri;
         try {
-            String decoded = UriUtils.decode(url, StandardCharsets.UTF_8);
-            encodedUri = UriComponentsBuilder.fromUriString(decoded)
-                .build()
-                .encode()
-                .toUri();
+            encodedUri = ProxiedWebClientFactory.normalizeUri(url);
         } catch (Exception e) {
             log.debug("URL 编码失败: {} - {}", url, e.getMessage());
             return Mono.just(CheckResult.invalid("CONNECTION_FAILED"));
         }
 
-        WebClient client = getWebClient(timeoutSeconds, proxySettings);
+        WebClient client = webClientFactory.get(timeoutSeconds, proxySettings, false);
 
-        // 先尝试 HEAD 请求，失败时降级为 GET
-        return checkWithHead(client, encodedUri, userAgent, timeoutSeconds)
+        return checkWithMethod(client, encodedUri, userAgent, timeoutSeconds, HttpMethod.HEAD)
             .onErrorResume(e -> {
-                // HEAD 返回 404 时，用 GET 确认（某些服务器不支持 HEAD）
-                if (is404Error(e)) {
-                    log.debug("HEAD 返回 404，降级使用 GET 确认: {}", url);
-                    return checkWithGet(client, encodedUri, userAgent, timeoutSeconds);
+                if (shouldRetryWithGet(e)) {
+                    log.debug("HEAD 不可信（{}），降级使用 GET 确认: {}", e.getMessage(), url);
+                    return checkWithMethod(client, encodedUri, userAgent, timeoutSeconds, HttpMethod.GET);
                 }
-                // 其他错误直接返回
                 return handleError(url, e);
             });
     }
 
-    /**
-     * 使用 HEAD 请求检测链接
-     */
-    private Mono<CheckResult> checkWithHead(WebClient client, URI uri, String userAgent, int timeoutSeconds) {
-        return client.method(HttpMethod.HEAD)
-                .uri(uri)
-                .header("User-Agent", userAgent)
-                .retrieve()
-                .toBodilessEntity()
-                .map(response -> {
-                    HttpStatusCode status = response.getStatusCode();
-                    if (status.is2xxSuccessful() || status.is3xxRedirection()) {
-                        return CheckResult.valid();
-                    }
-                    return CheckResult.invalid("HTTP " + status.value(), status.value());
-                })
-                .timeout(Duration.ofSeconds(timeoutSeconds));
+    private Mono<CheckResult> checkWithMethod(WebClient client, URI uri, String userAgent,
+                                              int timeoutSeconds, HttpMethod method) {
+        return client.method(method)
+            .uri(uri)
+            .header("User-Agent", userAgent)
+            .retrieve()
+            .toBodilessEntity()
+            .map(response -> {
+                HttpStatusCode status = response.getStatusCode();
+                // retrieve() 已把 4xx/5xx 转成异常，这里只会收到 2xx/3xx
+                if (status.is2xxSuccessful() || status.is3xxRedirection()) {
+                    return CheckResult.valid();
+                }
+                return CheckResult.invalid("HTTP " + status.value(), status.value());
+            })
+            .timeout(Duration.ofSeconds(timeoutSeconds))
+            .onErrorResume(e -> {
+                if (method == HttpMethod.GET) {
+                    return handleError(uri.toString(), e);
+                }
+                return Mono.error(e);
+            });
     }
 
     /**
-     * 使用 GET 请求检测链接（只读取响应头，不读取 body）
-     * 用于 HEAD 请求返回 404 时的降级确认
+     * HEAD 的结果是否不可信、需要用 GET 复核。
+     * <p>
+     * 按 RFC 9110，服务器不支持某方法的正确信号是 405 Method Not Allowed 与
+     * 501 Not Implemented；404 则是实践中不少 CDN/服务器对 HEAD 的错误应答。
+     * 三者都复核一次，避免把可访问的链接误报成断链。
+     * <p>
+     * 用类型判断而非匹配异常文本：{@code retrieve()} 的 4xx/5xx 直接抛
+     * {@link WebClientResponseException}，不经包装；而文本匹配会被 host 名、
+     * 端口号里恰好出现的 404 之类误触发，白白多发一次请求。
      */
-    private Mono<CheckResult> checkWithGet(WebClient client, URI uri, String userAgent, int timeoutSeconds) {
-        return client.method(HttpMethod.GET)
-                .uri(uri)
-                .header("User-Agent", userAgent)
-                .retrieve()
-                .toBodilessEntity()
-                .map(response -> {
-                    HttpStatusCode status = response.getStatusCode();
-                    if (status.is2xxSuccessful() || status.is3xxRedirection()) {
-                        log.debug("GET 确认链接有效: {} -> {}", uri, status.value());
-                        return CheckResult.valid();
-                    }
-                    // GET 也返回错误，确认是断链
-                    if (status.value() == 404) {
-                        log.debug("GET 确认链接 404: {}", uri);
-                        return CheckResult.invalid("HTTP 404", 404);
-                    }
-                    log.debug("GET 确认链接错误: {} -> {}", uri, status.value());
-                    return CheckResult.invalid("HTTP " + status.value(), status.value());
-                })
-                .timeout(Duration.ofSeconds(timeoutSeconds))
-                .onErrorResume(e -> handleError(uri.toString(), e));
-    }
-
-    /**
-     * 判断错误是否为 404
-     */
-    private boolean is404Error(Throwable e) {
-        if (e instanceof WebClientResponseException wcre) {
-            return wcre.getStatusCode().value() == 404;
+    private boolean shouldRetryWithGet(Throwable e) {
+        if (!(e instanceof WebClientResponseException wcre)) {
+            return false;
         }
-        String message = e.getMessage();
-        if (message != null) {
-            return message.contains("404") || message.contains("NOT_FOUND");
-        }
-        return false;
+        int status = wcre.getStatusCode().value();
+        return status == 404 || status == 405 || status == 501;
     }
 
-    /**
-     * 处理错误并返回检测结果
-     */
     private Mono<CheckResult> handleError(String url, Throwable e) {
-        // 超时
         if (e instanceof TimeoutException || e.getCause() instanceof TimeoutException) {
             return Mono.just(CheckResult.invalid("HTTP_TIMEOUT"));
         }
 
-        // 处理 WebClient 直接抛出的 HTTP 错误
         if (e instanceof WebClientResponseException wcre) {
             int statusCode = wcre.getStatusCode().value();
             if (statusCode == 404) {
@@ -191,13 +107,18 @@ public class LinkCheckerImpl implements LinkChecker {
             return Mono.just(CheckResult.invalid("HTTP " + statusCode, statusCode));
         }
 
-        // Netty 连接超时
-        if (e instanceof io.netty.channel.ConnectTimeoutException) {
+        // responseTimeout 触发的是 Netty ReadTimeoutException（继承 IOException 而非
+        // java.util.concurrent.TimeoutException），不识别的话会被误判为连接失败
+        if (isNettyTimeout(e) || isNettyTimeout(e.getCause())) {
             return Mono.just(CheckResult.invalid("HTTP_TIMEOUT"));
         }
 
-        // 其他连接失败
         log.debug("链接检测失败: {} - {}", url, e.getMessage());
         return Mono.just(CheckResult.invalid("CONNECTION_FAILED"));
+    }
+
+    private boolean isNettyTimeout(Throwable e) {
+        return e instanceof io.netty.channel.ConnectTimeoutException
+            || e instanceof io.netty.handler.timeout.TimeoutException;
     }
 }

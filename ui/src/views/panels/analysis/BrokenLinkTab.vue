@@ -57,7 +57,7 @@
     </div>
 
     <!-- 断链列表 -->
-    <div class="st-card">
+    <div class="links-card st-card">
       <VLoading v-if="loading" />
 
       <VEmpty
@@ -69,6 +69,12 @@
           <VButton type="secondary" :loading="scanning" @click="startScan">开始扫描</VButton>
         </template>
       </VEmpty>
+
+      <VEmpty
+        v-else-if="scanning"
+        title="正在扫描..."
+        message="扫描完成后将显示检测到的失效链接"
+      />
 
       <VEmpty
         v-else-if="brokenLinks.length === 0"
@@ -316,6 +322,12 @@ const fetchBrokenLinks = async () => {
 // 开始扫描
 const startScan = async () => {
   scanning.value = true
+  // 后端在 performScan 第一步就删光了旧的 BrokenLink 记录，
+  // 前端不主动清就会一直显示上一次的结果，直到扫描结束才刷新
+  brokenLinks.value = []
+  total.value = 0
+  selectedUrls.value = []
+  page.value = 1
   try {
     await axiosInstance.post(API_ENDPOINTS.BROKEN_LINKS_SCAN)
     pollScanStatus()
@@ -478,6 +490,9 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   if (newSize !== oldSize) {
     selectedUrls.value = []
   }
+  // 扫描期间不拉取：后端的旧数据清理是异步的，此时拉取可能把尚未清完的旧数据
+  // 又填回列表。扫描结束时 pollScanStatus 会统一刷新
+  if (scanning.value) return
   fetchBrokenLinks()
 })
 </script>
@@ -503,6 +518,12 @@ watch([page, pageSize], ([, newSize], [, oldSize]) => {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
+}
+
+/* 裁掉表格直角，让其不盖住 .st-card 的圆角
+   （与引用统计 .ref-card / 日志 .logs-container / 批量 .list-card 一致） */
+.links-card {
+  overflow: hidden;
 }
 
 /* 表格：列宽等本地细节（基础样式来自 .st-table） */

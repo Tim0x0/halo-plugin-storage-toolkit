@@ -92,8 +92,8 @@
               <span class="file-name" @click="openPreview(file, group.fileSize)" :title="file.displayName">{{ file.displayName }}</span>
             </div>
             <div class="file-meta">
+              <StatusBadge v-if="file.recommended" tone="success" class="recommend-badge">推荐保留</StatusBadge>
               <span class="group-badge" :title="file.groupDisplayName || '未分组'">{{ file.groupDisplayName || '未分组' }}</span>
-              <StatusBadge v-if="file.recommended" tone="success">推荐保留</StatusBadge>
               <StatusBadge v-if="file.referenceCount < 0" tone="neutral">未扫描</StatusBadge>
               <StatusBadge v-else :tone="file.referenceCount > 0 ? 'success' : 'warning'">
                 {{ file.referenceCount }} 次引用
@@ -104,8 +104,11 @@
         </div>
       </div>
 
-      <!-- 分页 -->
-        <VPagination v-if="total > 0" v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
+      <!-- 分页：重复检测是「每组一张卡」的布局，没有可挂靠的列表卡片，
+           因此分页自成一卡，与引用统计/日志/批量的分页区保持同样的留白与圆角 -->
+      <div class="pagination-card st-card" v-if="total > 0">
+        <VPagination v-model:page="page" v-model:size="pageSize" :total="total" :size-options="PAGE_SIZE_OPTIONS" />
+      </div>
     </div>
 
     <!-- 空状态 -->
@@ -389,6 +392,12 @@ const fetchDuplicateGroups = async () => {
 // 开始扫描
 const startScan = async () => {
   scanning.value = true
+  // 后端在 performScan 第一步就把旧的 DuplicateGroup 标记为待删除（列表查询会过滤掉），
+  // 前端不主动清就会一直显示上一次的结果，直到扫描结束才刷新
+  duplicateGroups.value = []
+  total.value = 0
+  selectedFiles.value = {}
+  page.value = 1
   try {
     await axiosInstance.post(API_ENDPOINTS.DUPLICATES_SCAN)
     // 轮询扫描状态
@@ -469,6 +478,9 @@ onUnmounted(() => {
 })
 
 watch([page, pageSize], () => {
+  // 扫描期间不拉取：后端的旧数据清理是异步的，此时拉取可能把尚未清完的旧数据
+  // 又填回列表。扫描结束时 pollScanStatus 会统一刷新
+  if (scanning.value) return
   fetchDuplicateGroups()
 })
 </script>
@@ -505,6 +517,17 @@ watch([page, pageSize], () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 分页卡片：作为 .duplicate-groups 的最后一个 flex 项，自然继承 12px 间距。
+   shared.css 的 .st-card .pagination 会补上 12px 16px 内边距，但它同时带了
+   border-top（那是为「表格 + 分页」同卡设计的），这里卡片内只有分页，去掉 */
+.st-card.pagination-card {
+  overflow: hidden;
+}
+
+.st-card.pagination-card :deep(.pagination) {
+  border-top: none;
 }
 
 /* 分组卡片外观由 .st-card 提供，此处保留圆角裁剪 */
@@ -625,8 +648,13 @@ watch([page, pageSize], () => {
 }
 
 .group-badge {
-  font-size: 11px;
-  padding: 2px 6px;
+  /* 用 inline-block 而非 inline-flex：flex 容器上 text-overflow: ellipsis 不生效，
+     长分组名会被硬截断而没有省略号 */
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  padding: 2px 8px;
   background: var(--st-bg-muted);
   color: var(--st-text-secondary);
   border-radius: var(--st-radius-sm);
@@ -642,6 +670,16 @@ watch([page, pageSize], () => {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+}
+
+/* 推荐保留放在最前，并与推荐行浅绿底拉开对比，避免 success 徽章糊成一片。
+   选择器带上 .st-status-badge 提高特异性，不依赖样式注入顺序覆盖 tone-success。
+   描边用 inset box-shadow 而非 border：border 会让这个徽章比同排徽章高 2px */
+.file-meta :deep(.st-status-badge.recommend-badge) {
+  background: var(--st-tag-green-bg);
+  color: var(--st-tag-green-text);
+  box-shadow: inset 0 0 0 1px var(--st-success-border);
+  font-weight: 600;
 }
 
 .file-date { font-size: 13px; color: var(--st-text-tertiary); }
