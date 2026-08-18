@@ -245,8 +245,11 @@ public class ImageProcessorImpl implements ImageProcessor {
                     watermarkApplied = true;
                     log.debug("水印添加成功: {}", originalFilename);
                 } catch (Exception e) {
-                    log.warn("水印添加失败: {}", e.getMessage());
-                    errorMessages.append("水印失败: ").append(e.getMessage()).append("; ");
+                    // 水印直接在解码位图上绘制，失败时位图可能已被部分修改，不可再用于后续处理，
+                    // 整体回退原始文件数据（也避免产出「无水印但已转格式」的中间产物）
+                    log.warn("水印添加失败，回退原图: {}", e.getMessage());
+                    return ProcessingResult.failed(imageData, originalFilename, contentType,
+                        "水印失败: " + e.getMessage());
                 }
             }
 
@@ -259,15 +262,17 @@ public class ImageProcessorImpl implements ImageProcessor {
                     int effort = formatConfig.getTargetFormat() == ImageFormat.AVIF
                         ? formatConfig.getAvifEffort() 
                         : formatConfig.getWebpEffort();
-                    byte[] convertedData = formatConverter.convert(image, formatConfig.getTargetFormat(), 
+                    byte[] convertedData = formatConverter.convert(image, formatConfig.getTargetFormat(),
                         formatConfig.getOutputQuality(), effort);
-                    
+
                     // 计算体积增加比例
                     double increaseRatio = (double)(convertedData.length - imageData.length) / imageData.length * 100;
                     int threshold = formatConfig.getSkipThreshold();
-                    
+
                     // 智能跳过逻辑：仅在无水印时生效（有水印时原始文件已不可用，跳过无意义）
                     if (formatConfig.isSkipIfLarger() && increaseRatio > threshold && !watermarkApplied) {
+                        // 位图不再使用，尽早释放引用，缩短大内存占用时间
+                        image = null;
                         // 无水印 + 转换后体积增加超过阈值 → 直接返回原始数据
                         log.debug("智能跳过格式转换: {} 体积 ({}) > 原始体积 ({})，增加 {}% 超过阈值 {}%",
                             formatConfig.getTargetFormat(),
@@ -292,6 +297,8 @@ public class ImageProcessorImpl implements ImageProcessor {
                         // 有水印且智能跳过已启用且体积超阈值：额外编码回原格式，比较选小的
                         if (watermarkApplied && formatConfig.isSkipIfLarger() && increaseRatio > threshold) {
                             byte[] watermarkedOriginal = imageToBytes(image, contentType);
+                            // 两份编码结果已到手，位图不再使用，尽早释放引用
+                            image = null;
 
                             if (watermarkedOriginal.length <= convertedData.length) {
                                 // 带水印原格式更小或相等 → 回退为原格式（水印已保留）
@@ -315,7 +322,8 @@ public class ImageProcessorImpl implements ImageProcessor {
                                     formatFileSize(watermarkedOriginal.length));
                             }
                         } else {
-                            // 正常情况：使用转换后的数据
+                            // 正常情况：使用转换后的数据（位图不再使用，尽早释放引用）
+                            image = null;
                             resultData = convertedData;
                             currentFilename = formatConverter.updateFilenameExtension(currentFilename,
                                 formatConfig.getTargetFormat());
@@ -351,12 +359,19 @@ public class ImageProcessorImpl implements ImageProcessor {
                 } catch (Exception e) {
                     log.warn("格式转换失败: {}", e.getMessage());
                     errorMessages.append("格式转换失败: ").append(e.getMessage()).append("; ");
+                    // 位图已释放后无法重编码（防御性分支），整体回退原始数据
+                    if (image == null) {
+                        return ProcessingResult.failed(imageData, originalFilename, contentType,
+                            errorMessages.toString());
+                    }
                     // 格式转换失败时，输出原格式
                     resultData = imageToBytes(image, contentType);
+                    image = null;
                 }
             } else {
                 // 没有格式转换，输出原格式
                 resultData = imageToBytes(image, contentType);
+                image = null;
             }
 
             // 返回结果

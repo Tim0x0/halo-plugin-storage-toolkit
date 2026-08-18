@@ -298,15 +298,20 @@ spec:
               value: ""
               validation: required
 
-            - $formkit: text
+            - $formkit: select
               if: "$get(watermarkEnabled).value === true && $get(watermarkType).value === 'TEXT'"
               id: watermarkFontName
               key: watermarkFontName
               name: fontName
               label: 字体名称
               value: ""
+              clearable: true
+              searchable: true
+              allowCreate: true
+              autoSelect: false
+              action: /apis/console.api.storage-toolkit.timxs.com/v1alpha1/fonts
               placeholder: 留空使用内置中文字体
-              help: 填写服务器已安装的字体名称（如 Alimama DaoLiTi）。留空则使用插件内置的中文字体（文泉驿微米黑）
+              help: 从服务器已加载的字体中选择，标注「支持中文」的字体可正常渲染中文；留空使用插件内置的中文字体（文泉驿微米黑）。运行中新安装的字体需重启 Halo 后才会出现，也可直接输入字体名称
             
             - $formkit: radio
               if: "$get(watermarkEnabled).value === true && $get(watermarkType).value === 'TEXT'"

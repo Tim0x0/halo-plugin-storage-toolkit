@@ -37,6 +37,18 @@ public class FormatConverterImpl implements FormatConverter {
     );
 
     /**
+     * 可直接交给编码器的图像类型（经单元测试验证通道顺序正确）
+     * 命中时跳过整幅复制转换，降低大图处理的内存峰值；
+     * JPEG 解码产物为 TYPE_3BYTE_BGR，PNG 解码产物为 TYPE_4BYTE_ABGR，覆盖绝大多数上传场景
+     */
+    private static final Set<Integer> ENCODER_SAFE_TYPES = Set.of(
+        BufferedImage.TYPE_INT_RGB,
+        BufferedImage.TYPE_INT_ARGB,
+        BufferedImage.TYPE_3BYTE_BGR,
+        BufferedImage.TYPE_4BYTE_ABGR
+    );
+
+    /**
      * 转换图片格式
      * 将 BufferedImage 转换为指定格式的字节数组
      *
@@ -145,19 +157,19 @@ public class FormatConverterImpl implements FormatConverter {
 
     /**
      * 规范化图片类型，保留 Alpha 通道
-     * 有 Alpha 通道的图片转为 TYPE_INT_ARGB，无 Alpha 的转为 TYPE_INT_RGB
+     * 编码器可直接处理的常见类型（JPEG/PNG 解码产物等）直接返回，避免整幅复制；
+     * 其余类型：有 Alpha 通道的转为 TYPE_INT_ARGB，无 Alpha 的转为 TYPE_INT_RGB
      *
      * @param src 源图片
-     * @return 规范化后的图片
+     * @return 规范化后的图片（常见类型时与入参为同一对象）
      */
     private BufferedImage normalizeImage(BufferedImage src) {
-        boolean hasAlpha = src.getColorModel().hasAlpha();
-        int targetType = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
-
-        if (src.getType() == targetType) {
-            log.debug("图片已经是{}格式，无需转换", hasAlpha ? "ARGB" : "RGB");
+        if (ENCODER_SAFE_TYPES.contains(src.getType())) {
+            log.debug("图片类型 {} 可直接编码，跳过规范化转换", src.getType());
             return src;
         }
+        boolean hasAlpha = src.getColorModel().hasAlpha();
+        int targetType = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
 
         log.debug("将图片从类型 {} 转换为 {}", src.getType(), hasAlpha ? "ARGB" : "RGB");
         BufferedImage dest = new BufferedImage(src.getWidth(), src.getHeight(), targetType);
