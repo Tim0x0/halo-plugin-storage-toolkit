@@ -7,7 +7,7 @@ metadata:
   name: storage-toolkit
 spec:
   enabled: true
-  version: "1.1.0"
+  version: "1.2.0"
   requires: ">=2.22.1"
   author:
     name: Tim0x0
@@ -15,7 +15,7 @@ spec:
   logo: logo.png
   homepage: https://github.com/Tim0x0/halo-plugin-storage-toolkit#readme
   repo: https://github.com/Tim0x0/halo-plugin-storage-toolkit
-  issues: https://github.com/Tim0x0/halo-plugin-storage-toolkit/issues
+  issues: https://blog.timxs.com/bbs?category=storage-toolkit
   displayName: "存储工具箱"
   description: "Halo 存储增强插件 - 支持图片处理、格式转换、水印添加等功能"
   license:

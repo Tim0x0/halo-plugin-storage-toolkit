@@ -1,0 +1,236 @@
+# Release 发布后自动在 BBS 社区发帖（更新已有帖而非重复创建）
+#
+# 依赖插件 Console 端点（无需改 Java 代码）：
+#   GET  /apis/console.api.bbs.timxs.com/v1alpha1/bbsposts?keyword=   按 slug 找已有帖
+#   POST /apis/console.api.bbs.timxs.com/v1alpha1/bbsposts?publish=   创建
+#   PUT  /apis/console.api.bbs.timxs.com/v1alpha1/bbsposts/{name}     更新（已发布帖写入工作稿）
+#   PUT  /apis/console.api.bbs.timxs.com/v1alpha1/bbsposts/{name}/publish  提升工作稿为前台版本
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   secret BBS_POST_PAT      你自己 Halo 站点的个人访问令牌（持牌用户需有 BBS 版主
+#                            bbs-moderate 及以上角色）。注意与官方 CD 上传应用市场用的
+#                            halo-pat（halo.run 官方站凭据）是两回事，勿混用。
+#   variable HALO_BASE_URL   Halo 站点地址（如 https://example.com，须可被 GitHub 公网访问）
+#   variable BBS_CATEGORY_NAME  目标分类的 metadata.name（形如 category-xxxx，不是显示名）
+#   variable BBS_PROJECT_NAME   可选。标题前缀，按原样拼接（格式自己写，如
+#                            「[BBS 社区]」或「BBS 社区 |」）。有值：{前缀} {tag} 发布说明；
+#                            空则保持 {tag} 发布说明。手动运行时 inputs.title 优先。
+#
+# 行为约定：
+#   - 帖子别名固定为 release-<tag 归一>（如 v1.2.3 → release-v123），以此识别「同一版本的帖子」：
+#     删了 release 重发、手动重跑都只会更新已有帖，不会刷屏。
+#   - 状态智能区分：正式 release → 直接发布；prerelease → 存草稿（手动运行时可覆盖）。
+#   - 正文由 release notes（Markdown）经 pandoc 转 HTML 后提交，服务端会再过白名单净化。
+#   - 与 cd.yaml 同时被 release 事件触发，会轮询等待 CD 把 jar 资产传完再拼下载链接。
+
+name: 同步 BBS 公告
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（如 v1.2.3），将创建或更新该版本对应的帖子'
+        required: true
+      status:
+        description: '帖子状态（auto：正式 release=发布，prerelease=草稿）'
+        type: choice
+        options: [auto, published, draft]
+        default: auto
+      title:
+        description: '标题（留空自动生成：有 BBS_PROJECT_NAME 则为「前缀 tag 发布说明」，否则「tag 发布说明」）'
+        required: false
+
+permissions:
+  contents: read
+
+# 同一 tag 的操作串行，避免并发下「查无此帖 → 双双创建」
+concurrency:
+  group: bbs-release-post-${{ inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  sync-bbs-post:
+    runs-on: ubuntu-latest
+    env:
+      HALO_BASE_URL: ${{ vars.HALO_BASE_URL }}
+      BBS_CATEGORY_NAME: ${{ vars.BBS_CATEGORY_NAME }}
+      BBS_PROJECT_NAME: ${{ vars.BBS_PROJECT_NAME }}
+    steps:
+      - name: 安装 pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
+      - name: 校验配置
+        env:
+          BBS_POST_PAT: ${{ secrets.BBS_POST_PAT }}
+        run: |
+          missing=""
+          [ -n "$HALO_BASE_URL" ] || missing="$missing vars.HALO_BASE_URL"
+          [ -n "$BBS_CATEGORY_NAME" ] || missing="$missing vars.BBS_CATEGORY_NAME"
+          [ -n "$BBS_POST_PAT" ] || missing="$missing secrets.BBS_POST_PAT"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少配置:$missing（仓库 Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+          command -v pandoc >/dev/null || { echo "::error::runner 缺少 pandoc"; exit 1; }
+
+      - name: 准备 Release 内容与标题 / 状态 / 别名
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_STATUS: ${{ inputs.status }}
+          INPUT_TITLE: ${{ inputs.title }}
+        run: |
+          # release 事件直接读事件负载；手动运行按 tag 从仓库 release 列表里找。
+          # 事件负载把 release 对象嵌在 .release 下（顶层是 action/repository/sender），
+          # 须解包取 .release，后面的 .id/.assets/.tag_name 才取得到。
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            jq '.release' "$GITHUB_EVENT_PATH" > release.json
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+            jq --arg tag "$INPUT_TAG" '[.[] | select(.tag_name == $tag)] | first' \
+              releases.json > release.json
+            if [ "$(jq -r '. == null' release.json)" = "true" ]; then
+              echo "::error::找不到 tag 为 $INPUT_TAG 的 release"
+              exit 1
+            fi
+          fi
+
+          # CD 工作流（cd.yaml）与本流程同时被 release 事件触发，jar 资产稍后才上传完。
+          # 轮询等待 .jar 出现，让帖子里的下载链接不落空；手动运行通常资产已在，秒过。
+          RELEASE_ID=$(jq -r '.id' release.json)
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then ASSET_WAIT=480; else ASSET_WAIT=15; fi
+          WAITED=0
+          while ! jq -e '.assets | map(select(.name | endswith(".jar"))) | length > 0' \
+              release.json >/dev/null; do
+            if [ "$WAITED" -ge "$ASSET_WAIT" ]; then
+              echo "::warning::等待超时仍无 jar 资产（CD 可能失败），帖子将不含下载链接"
+              break
+            fi
+            echo "等待 release 资产上传（已等 ${WAITED}s / 上限 ${ASSET_WAIT}s）…"
+            sleep 30
+            WAITED=$((WAITED + 30))
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release.json
+          done
+
+          TAG=$(jq -r '.tag_name' release.json)
+          PRERELEASE=$(jq -r '.prerelease' release.json)
+
+          # 状态：正式=发布、预发布=草稿；手动运行可覆盖
+          STATUS="${INPUT_STATUS:-auto}"
+          case "$STATUS" in
+            published) PUBLISH=true ;;
+            draft)     PUBLISH=false ;;
+            *)         [ "$PRERELEASE" = "true" ] && PUBLISH=false || PUBLISH=true ;;
+          esac
+
+          # 别名归一对齐服务端 slugify：小写、空白/下划线转连字符、只留字母数字与连字符。
+          # 注意服务端同样剥掉点号（v1.2.3 → v123），两侧必须一致才能互相认领。
+          SLUG=$(printf 'release-%s' "$TAG" | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[[:space:]_]+/-/g; s/[^a-z0-9-]//g; s/-{2,}/-/g; s/^-+//; s/-+$//')
+          [ -n "$SLUG" ] || SLUG="release-$(date +%s)"
+
+          # 正文：release notes（Markdown）→ HTML，前后拼上 release 链接与附件下载
+          jq -r '.body // ""' release.json > release.md
+          pandoc -f gfm -t html release.md -o body.html
+          jq -r '"<p>Release 页面：<a href=\"" + .html_url + "\">" + .tag_name + "</a></p>"' \
+            release.json > intro.html
+          jq -r 'if (.assets | length) > 0
+                 then "<h2>下载</h2>\n<ul>" +
+                      ([.assets[] | "<li><a href=\"" + .browser_download_url + "\">"
+                        + .name + "</a></li>"] | join("")) + "</ul>"
+                 else "" end' release.json > assets.html
+          cat intro.html body.html assets.html > content.html
+
+          # 标题：手动输入 > 变量前缀+tag > 仅 tag。前缀按原样拼，不改格式。
+          PROJECT_NAME="$(printf '%s' "$BBS_PROJECT_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [ -n "$INPUT_TITLE" ]; then
+            TITLE="$INPUT_TITLE"
+          elif [ -n "$PROJECT_NAME" ]; then
+            TITLE="$PROJECT_NAME $TAG 发布说明"
+          else
+            TITLE="$TAG 发布说明"
+          fi
+
+          {
+            echo "TAG=$TAG"
+            echo "SLUG=$SLUG"
+            echo "PUBLISH=$PUBLISH"
+            echo "TITLE=$TITLE"
+          } >> "$GITHUB_ENV"
+
+      - name: 查找 / 创建 / 更新 BBS 帖子
+        env:
+          BBS_POST_PAT: ${{ secrets.BBS_POST_PAT }}
+        run: |
+          HALO_BASE_URL="${HALO_BASE_URL%/}"
+          API="$HALO_BASE_URL/apis/console.api.bbs.timxs.com/v1alpha1"
+
+          jq -n --arg title "$TITLE" \
+                --arg categoryName "$BBS_CATEGORY_NAME" \
+                --arg slug "$SLUG" \
+                --rawfile content content.html \
+            '{title: $title, categoryName: $categoryName, slug: $slug,
+              type: "ANNOUNCEMENT", autoExcerpt: true, content: $content}' > payload.json
+
+          # 按别名认领同一版本的已有帖（keyword 可匹配 slug，服务端 listConsole 支持；
+          # 不依赖标题，标题被人为改过也能认出来）。回收站内的帖不在列表，等同于不存在。
+          HTTP=$(curl -s -o resp.json -w '%{http_code}' -G "$API/bbsposts" \
+            -H "Authorization: Bearer $BBS_POST_PAT" \
+            --data-urlencode "keyword=$SLUG" --data-urlencode "size=50")
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::查询帖子列表失败（HTTP $HTTP，401 请检查 BBS_POST_PAT 是否过期）：$(cat resp.json)"
+            exit 1
+          fi
+          MATCH=$(jq --arg slug "$SLUG" \
+            '[.items[]? | select(.slug == $slug)] | sort_by(.creationTimestamp) | last')
+          EXISTING=$(printf '%s' "$MATCH" | jq -r '.name // empty')
+          EXISTING_PHASE=$(printf '%s' "$MATCH" | jq -r '.phase // empty')
+
+          if [ -z "$EXISTING" ]; then
+            echo "未找到 $SLUG 对应的帖子，创建新帖（publish=$PUBLISH）"
+            HTTP=$(curl -s -o resp.json -w '%{http_code}' -X POST \
+              "$API/bbsposts?publish=$PUBLISH" \
+              -H "Authorization: Bearer $BBS_POST_PAT" -H "Content-Type: application/json" \
+              --data @payload.json)
+            ACTION="created"
+          else
+            echo "找到已有帖子 $EXISTING（状态 $EXISTING_PHASE），执行更新"
+            HTTP=$(curl -s -o resp.json -w '%{http_code}' -X PUT \
+              "$API/bbsposts/$EXISTING" \
+              -H "Authorization: Bearer $BBS_POST_PAT" -H "Content-Type: application/json" \
+              --data @payload.json)
+            ACTION="updated"
+            # 已发布帖的 PUT 只写入工作稿，须再调 publish 提升为前台版本；
+            # 草稿帖 + 目标发布同样靠这一步提升。publish 幂等安全。
+            if [ "$HTTP" = "200" ] && [ "$PUBLISH" = "true" ]; then
+              HTTP=$(curl -s -o resp.json -w '%{http_code}' -X PUT \
+                "$API/bbsposts/$EXISTING/publish" \
+                -H "Authorization: Bearer $BBS_POST_PAT")
+            elif [ "$HTTP" = "200" ] && [ "$PUBLISH" = "false" ] \
+                 && [ "$EXISTING_PHASE" = "PUBLISHED" ]; then
+              # 目标是草稿但帖子已发布：新内容留在工作稿，前台保持已发布版本。
+              # 不自动撤稿——撤下已发布内容应由人在后台决定。
+              echo "::warning::帖子 $EXISTING 已发布，本次改动保存在工作稿；如需下架请在后台操作"
+            fi
+          fi
+
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::API 调用失败（HTTP $HTTP）：$(cat resp.json)"
+            exit 1
+          fi
+
+          POST_NAME=$(jq -r '.metadata.name' resp.json)
+          # 前台链接以服务端响应的真实别名为准：创建路径撞名时服务端会自动追加
+          # 随机后缀（对齐官方创建期行为），此时 $SLUG 已不代表帖子真实别名
+          FINAL_SLUG=$(jq -r '.spec.slug // empty' resp.json)
+          POST_URL="$HALO_BASE_URL/bbs/post/${FINAL_SLUG:-$SLUG}"
+          echo "✅ 完成：$ACTION name=$POST_NAME publish=$PUBLISH"
+          [ "$PUBLISH" = "true" ] && echo "前台地址：$POST_URL"
+          {
+            echo "## BBS 发帖结果"
+            echo "- 操作：$([ "$ACTION" = "created" ] && echo 创建 || echo 更新)"
+            echo "- 标题：$TITLE"
+            echo "- 状态：$([ "$PUBLISH" = "true" ] && echo 已发布 || echo 草稿)"
+            if [ "$PUBLISH" = "true" ]; then echo "- 前台地址：$POST_URL"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
