@@ -9,6 +9,7 @@ export const SOURCE_TYPE_ICONS: Record<string, string> = {
   'Moment': '📸',
   'Photo': '🖼️',
   'Doc': '📚',
+  'InteractionPlus': '✨',
   'SystemSetting': '⚙️',
   'PluginSetting': '🔌',
   'ThemeSetting': '🎨',
@@ -26,6 +27,7 @@ export const SOURCE_TYPE_LABELS: Record<string, string> = {
   'Moment': '瞬间',
   'Photo': '图库',
   'Doc': '文档',
+  'InteractionPlus': '互动增强',
   'SystemSetting': '系统设置',
   'PluginSetting': '插件设置',
   'ThemeSetting': '主题设置',
@@ -43,6 +45,7 @@ export const SOURCE_TYPE_CLASSES: Record<string, string> = {
   'Moment': 'st-tag--orange',
   'Photo': 'st-tag--orange',
   'Doc': 'st-tag--indigo',
+  'InteractionPlus': 'st-tag--cyan',
   'SystemSetting': 'st-tag--purple',
   'PluginSetting': 'st-tag--purple',
   'ThemeSetting': 'st-tag--purple',
@@ -101,10 +104,11 @@ const SOURCE_TYPE_ORDER: Record<string, number> = {
   'Moment': 4,
   'Photo': 5,
   'Doc': 6,
-  'SystemSetting': 7,
-  'PluginSetting': 8,
-  'ThemeSetting': 9,
-  'User': 10
+  'InteractionPlus': 7,
+  'SystemSetting': 8,
+  'PluginSetting': 9,
+  'ThemeSetting': 10,
+  'User': 11
 }
 
 /**

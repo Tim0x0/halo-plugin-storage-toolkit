@@ -27,6 +27,7 @@
           <option value="Moment">瞬间</option>
           <option value="Photo">图库</option>
           <option value="Doc">文档</option>
+          <option value="InteractionPlus">互动增强</option>
           <option value="SystemSetting">系统设置</option>
           <option value="PluginSetting">插件设置</option>
           <option value="ThemeSetting">主题设置</option>

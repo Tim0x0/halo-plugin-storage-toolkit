@@ -92,7 +92,9 @@ const REFERENCE_TYPE_LABELS: Record<string, string> = {
   'reply': '回复',
   'avatar': '头像',
   'icon': '图标',
-  'basic': '基本设置'
+  'basic': '基本设置',
+  'decoration': '装饰',
+  'identity': '标识'
 }
 
 // Setting group label 缓存

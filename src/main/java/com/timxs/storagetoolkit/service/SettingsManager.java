@@ -78,10 +78,11 @@ public interface SettingsManager {
         boolean scanComments,
         boolean scanMoments,
         boolean scanPhotos,
-        boolean scanDocs
+        boolean scanDocs,
+        boolean scanInteractions
     ) {
         public static AnalysisSettings defaultSettings() {
-            return new AnalysisSettings(true, true, false, false, false, false);
+            return new AnalysisSettings(true, true, false, false, false, false, false);
         }
     }
 

@@ -496,7 +496,15 @@ spec:
               label: 扫描文档
               value: false
               help: 扫描 Docsme 文档插件中的附件引用（需安装 Docsme 插件）
-        
+
+            - $formkit: switch
+              id: scanInteractions
+              key: scanInteractions
+              name: scanInteractions
+              label: 扫描互动增强
+              value: false
+              help: 扫描互动增强插件中装饰素材与身份标识图片的附件引用（需安装互动增强插件）
+
         # 重复检测
         - $formkit: group
           name: duplicateScanning

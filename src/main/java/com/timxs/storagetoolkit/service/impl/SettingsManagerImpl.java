@@ -430,7 +430,8 @@ public class SettingsManagerImpl implements SettingsManager {
                         getBoolean(refScanning, "scanComments", false),
                         getBoolean(refScanning, "scanMoments", false),
                         getBoolean(refScanning, "scanPhotos", false),
-                        getBoolean(refScanning, "scanDocs", false)
+                        getBoolean(refScanning, "scanDocs", false),
+                        getBoolean(refScanning, "scanInteractions", false)
                     );
                 }
                 return AnalysisSettings.defaultSettings();

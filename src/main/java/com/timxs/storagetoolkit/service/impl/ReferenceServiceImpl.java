@@ -93,6 +93,12 @@ public class ReferenceServiceImpl implements ReferenceService {
     // Docsme 文档版本 GVK (doc.halo.run/v1alpha1/ProjectVersion)
     private static final GroupVersionKind PROJECT_VERSION_GVK =
         new GroupVersionKind("doc.halo.run", "v1alpha1", "ProjectVersion");
+    // 互动增强插件 GVK (interaction-plus.timxs.com/v1alpha1/UserDecorationAsset)
+    private static final GroupVersionKind DECORATION_ASSET_GVK =
+        new GroupVersionKind("interaction-plus.timxs.com", "v1alpha1", "UserDecorationAsset");
+    // 互动增强 身份标识映射 GVK (interaction-plus.timxs.com/v1alpha1/UserIdentityMarkMapping)
+    private static final GroupVersionKind IDENTITY_MARK_GVK =
+        new GroupVersionKind("interaction-plus.timxs.com", "v1alpha1", "UserIdentityMarkMapping");
 
     // 内存中的扫描标志（用于检测服务重启）
     private final AtomicInteger scanningFlag = new AtomicInteger(0);
@@ -232,6 +238,9 @@ public class ReferenceServiceImpl implements ReferenceService {
                 }
                 if (settings.scanDocs()) {
                     scanTasks.add(scanDocs(context));
+                }
+                if (settings.scanInteractions()) {
+                    scanTasks.add(scanInteractions(context));
                 }
                 // 系统设置始终扫描
                 scanTasks.add(scanConfigMaps(context));
@@ -794,6 +803,54 @@ public class ReferenceServiceImpl implements ReferenceService {
 
                 return scanDocContent.then(scanProjectIcon);
             });
+    }
+
+    /**
+     * 扫描互动增强插件（Interaction Plus）
+     * 覆盖 2 类含附件 URL 的记录：
+     * - 装饰素材（UserDecorationAsset.spec.asset.url，勋章/头像框/名片背景/称号图片）
+     * - 身份标识图片（UserIdentityMarkMapping.spec.image）
+     * 授予记录 / 佩戴配置存装饰内部名而非 URL，元数据为纯文本，均无需扫描；
+     * 自定义模板为站长贴的渲染片段，约定不放图片，不扫描
+     */
+    private Mono<Void> scanInteractions(ReferenceScanContext context) {
+        // 1. 扫描装饰素材（草稿/投稿中的装饰同样持有素材，一律视为引用，避免误删导致前台裂图）
+        Mono<Void> scanDecorationAssets = scanExtensions(context, DECORATION_ASSET_GVK, "装饰资产", (ext, rootNode) -> {
+            String name = ext.getMetadata().getName();
+            JsonNode specNode = rootNode.get("spec");
+            String displayName = specNode != null && specNode.has("displayName")
+                ? specNode.get("displayName").asText() : name;
+            String url = null;
+            if (specNode != null && specNode.has("asset") && specNode.get("asset").has("url")) {
+                url = specNode.get("asset").get("url").asText(null);
+            }
+            if (StringUtils.hasText(url)) {
+                AttachmentReference.ReferenceSource source = createSource(
+                    "InteractionPlus", name, displayName,
+                    "/console/interaction-plus/decorations/assets", false, "decoration");
+                context.addUrl(url, source);
+            }
+            return Mono.empty();
+        });
+
+        // 2. 扫描身份标识图片（displayMode=image 时上传的附件图）
+        Mono<Void> scanIdentityMarks = scanExtensions(context, IDENTITY_MARK_GVK, "身份标识", (ext, rootNode) -> {
+            String name = ext.getMetadata().getName();
+            JsonNode specNode = rootNode.get("spec");
+            String displayName = specNode != null && specNode.has("displayName")
+                ? specNode.get("displayName").asText() : name;
+            String image = specNode != null && specNode.has("image")
+                ? specNode.get("image").asText(null) : null;
+            if (StringUtils.hasText(image)) {
+                AttachmentReference.ReferenceSource source = createSource(
+                    "InteractionPlus", name, displayName,
+                    "/console/interaction-plus/decorations/identity-marks", false, "identity");
+                context.addUrl(image, source);
+            }
+            return Mono.empty();
+        });
+
+        return scanDecorationAssets.then(scanIdentityMarks);
     }
 
     /**
@@ -1399,6 +1456,8 @@ public class ReferenceServiceImpl implements ReferenceService {
             case "media" -> "媒体";
             case "avatar" -> "头像";
             case "icon" -> "图标";
+            case "decoration" -> "装饰";
+            case "identity" -> "标识";
             default -> referenceType;
         };
     }
