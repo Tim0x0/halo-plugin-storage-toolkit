@@ -6,6 +6,7 @@ import com.timxs.storagetoolkit.config.ImageWatermarkConfig;
 import com.timxs.storagetoolkit.config.ProcessingConfig;
 import com.timxs.storagetoolkit.config.TextWatermarkConfig;
 import com.timxs.storagetoolkit.config.WatermarkConfig;
+import com.timxs.storagetoolkit.imageio.PinnedImageIo;
 import com.timxs.storagetoolkit.model.ImageFormat;
 import com.timxs.storagetoolkit.model.ProcessingResult;
 import com.timxs.storagetoolkit.model.WatermarkType;
@@ -19,9 +20,11 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import run.halo.app.infra.ExternalLinkProcessor;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.time.Duration;
@@ -51,6 +54,12 @@ public class ImageProcessorImpl implements ImageProcessor {
      * 外部链接处理器，用于将相对路径转为完整 URL
      */
     private final ExternalLinkProcessor externalLinkProcessor;
+
+    /**
+     * 固定 ImageIO 编解码器：WebP/AVIF 解码走本插件自己的 SPI 实例，
+     * 不查询 JVM 级全局注册表，避免被其他插件注册（或遗留）的外来 SPI 劫持（issue #22）
+     */
+    private final PinnedImageIo pinnedImageIo;
 
     /**
      * 水印图片缓存
@@ -219,8 +228,8 @@ public class ImageProcessorImpl implements ImageProcessor {
             // 设置插件类加载器为上下文类加载器，确保 ImageIO 能找到 WebP 等格式的 SPI
             Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
             
-            // 读取图片
-            BufferedImage image = ImageIO.read(new ByteArrayInputStream(imageData));
+            // 读取图片（WebP/AVIF 走固定 SPI，其余格式回退全局查找）
+            BufferedImage image = pinnedImageIo.read(imageData);
             if (image == null) {
                 return ProcessingResult.failed(imageData, originalFilename, contentType, "无法读取图片数据");
             }
@@ -511,7 +520,7 @@ public class ImageProcessorImpl implements ImageProcessor {
             conn.setRequestMethod("GET");
 
             try (java.io.InputStream is = conn.getInputStream()) {
-                BufferedImage img = ImageIO.read(is);
+                BufferedImage img = pinnedImageIo.read(is);
                 if (img != null) {
                     log.debug("水印图片加载成功: {}x{}, 类型: {}", img.getWidth(), img.getHeight(), img.getType());
                 } else {
@@ -558,15 +567,24 @@ public class ImageProcessorImpl implements ImageProcessor {
 
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
 
-        // JPEG 使用指定质量参数编码，避免 ImageIO 默认质量（约 0.75）导致画质下降
-        if (isJpeg) {
+        // WebP/AVIF 使用固定 SPI 编码（不查询全局注册表，避免外来 SPI 劫持）
+        ImageWriter pinnedWriter = pinnedImageIo.createPinnedWriter(formatName);
+        if (pinnedWriter != null) {
+            try (var ios = new MemoryCacheImageOutputStream(outputStream)) {
+                pinnedWriter.setOutput(ios);
+                pinnedWriter.write(null, new IIOImage(imageToWrite, null, null), null);
+            } finally {
+                pinnedWriter.dispose();
+            }
+        } else if (isJpeg) {
+            // JPEG 使用指定质量参数编码，避免 ImageIO 默认质量（约 0.75）导致画质下降
             javax.imageio.ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
             javax.imageio.ImageWriteParam param = writer.getDefaultWriteParam();
             param.setCompressionMode(javax.imageio.ImageWriteParam.MODE_EXPLICIT);
             param.setCompressionQuality(0.85f);
-            try (var ios = ImageIO.createImageOutputStream(outputStream)) {
+            try (var ios = new MemoryCacheImageOutputStream(outputStream)) {
                 writer.setOutput(ios);
-                writer.write(null, new javax.imageio.IIOImage(imageToWrite, null, null), param);
+                writer.write(null, new IIOImage(imageToWrite, null, null), param);
             } finally {
                 writer.dispose();
             }

@@ -1,5 +1,6 @@
 package com.timxs.storagetoolkit.service.impl;
 
+import com.timxs.storagetoolkit.imageio.PinnedImageIo;
 import com.timxs.storagetoolkit.model.ImageFormat;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -23,15 +24,15 @@ class FormatConverterImplTest {
 
     /**
      * 重新扫描注册 ImageIO SPI
-     * StorageToolkitPluginTest 的 stop() 会从全局注册表注销 WebP/AVIF SPI，
-     * 与本类在同一 JVM 中先后执行时会导致编码器不可用，这里确保测试不受执行顺序影响
+     * 编码已走 PinnedImageIo 固定 SPI（不依赖全局注册表），但解码断言仍走 ImageIO 全局查找，
+     * 这里确保 SPI 已注册，测试不受同 JVM 内其他测试执行顺序影响
      */
     @BeforeAll
     static void ensureImageIoSpiRegistered() {
         ImageIO.scanForPlugins();
     }
 
-    private final FormatConverterImpl converter = new FormatConverterImpl();
+    private final FormatConverterImpl converter = new FormatConverterImpl(new PinnedImageIo());
 
     /** 颜色容差：有损编码允许的单通道偏差（通道错位时红蓝差值为 255，远超容差，可明确判别） */
     private static final int TOLERANCE = 40;

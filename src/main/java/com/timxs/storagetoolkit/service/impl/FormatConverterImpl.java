@@ -2,8 +2,10 @@ package com.timxs.storagetoolkit.service.impl;
 
 import com.github.avifimageio.AvifWriteParam;
 import com.luciad.imageio.webp.WebPWriteParam;
+import com.timxs.storagetoolkit.imageio.PinnedImageIo;
 import com.timxs.storagetoolkit.model.ImageFormat;
 import com.timxs.storagetoolkit.service.FormatConverter;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -12,6 +14,7 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
 import javax.imageio.stream.ImageOutputStream;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
@@ -25,7 +28,14 @@ import java.util.Set;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class FormatConverterImpl implements FormatConverter {
+
+    /**
+     * 固定 ImageIO 编解码器：WebP/AVIF 编码走本插件自己的 SPI 实例，
+     * 不查询 JVM 级全局注册表，避免被其他插件注册（或遗留）的外来 SPI 劫持
+     */
+    private final PinnedImageIo pinnedImageIo;
 
     /**
      * 支持的目标格式集合
@@ -86,39 +96,23 @@ public class FormatConverterImpl implements FormatConverter {
             // 设置插件类加载器，确保 ImageIO 能找到 WebP 的 SPI
             Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
 
-            // 诊断：列出所有可用的 ImageWriter 格式
-            String[] writerFormats = ImageIO.getWriterFormatNames();
-            log.debug("可用的 ImageWriter 格式: {}", String.join(", ", writerFormats));
-
-            // 诊断：检查 WebP writer 是否可用
-            Iterator<ImageWriter> webpWriters = ImageIO.getImageWritersByFormatName("webp");
-            if (webpWriters.hasNext()) {
-                log.debug("WebP ImageWriter 可用: {}", webpWriters.next().getClass().getName());
-            } else {
-                log.warn("WebP ImageWriter 不可用！检查 native 库是否加载成功，系统架构: {} {}",
-                    System.getProperty("os.name"), System.getProperty("os.arch"));
-            }
-
-            // 诊断：检查 AVIF writer 是否可用
-            Iterator<ImageWriter> avifWriters = ImageIO.getImageWritersByFormatName("avif");
-            if (avifWriters.hasNext()) {
-                log.debug("AVIF ImageWriter 可用: {}", avifWriters.next().getClass().getName());
-            } else {
-                log.warn("AVIF ImageWriter 不可用！检查 native 库是否加载成功，系统架构: {} {}",
-                    System.getProperty("os.name"), System.getProperty("os.arch"));
-            }
-
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             String formatName = targetFormat.getExtension();
 
-            // 获取对应格式的 ImageWriter
-            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName(formatName);
-            if (!writers.hasNext()) {
-                throw new RuntimeException("No appropriate writer found for format: " + targetFormat);
+            // 优先使用本插件固定的 SPI 实例（不查询全局注册表）；不可用时回退全局查找
+            ImageWriter writer = pinnedImageIo.createPinnedWriter(formatName);
+            if (writer != null) {
+                log.debug("使用固定 SPI 编码器: {}", writer.getClass().getName());
+            } else {
+                Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName(formatName);
+                if (!writers.hasNext()) {
+                    throw new RuntimeException("No appropriate writer found for format: " + targetFormat);
+                }
+                writer = writers.next();
+                log.warn("固定 SPI 不可用，回退全局查找编码器: {}", writer.getClass().getName());
             }
-            
-            ImageWriter writer = writers.next();
-            try (ImageOutputStream ios = ImageIO.createImageOutputStream(outputStream)) {
+            // 显式使用 MemoryCache 流：ImageIO.createImageOutputStream 也会查询全局注册表
+            try (ImageOutputStream ios = new MemoryCacheImageOutputStream(outputStream)) {
                 writer.setOutput(ios);
                 
                 // 配置压缩参数

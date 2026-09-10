@@ -1,6 +1,7 @@
 package com.timxs.storagetoolkit;
 
 import com.timxs.storagetoolkit.extension.ProcessingLog;
+import com.timxs.storagetoolkit.imageio.PinnedImageIo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -24,6 +25,9 @@ class StorageToolkitPluginTest {
 
     @Mock
     Scheme scheme;
+
+    @Mock
+    PinnedImageIo pinnedImageIo;
 
     @InjectMocks
     StorageToolkitPlugin plugin;
