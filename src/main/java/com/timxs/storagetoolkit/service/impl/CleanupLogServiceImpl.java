@@ -21,6 +21,7 @@ import java.time.ZoneId;
 
 import static run.halo.app.extension.index.query.Queries.contains;
 import static run.halo.app.extension.index.query.Queries.equal;
+import static run.halo.app.extension.index.query.Queries.lessThan;
 
 /**
  * 清理日志服务实现
@@ -118,18 +119,14 @@ public class CleanupLogServiceImpl implements CleanupLogService {
             .atStartOfDay(ZoneId.systemDefault())
             .toInstant();
 
-        return client.listAll(CleanupLog.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(logEntry -> {
-                // 跳过已标记删除的
-                if (logEntry.getMetadata() != null && logEntry.getMetadata().getDeletionTimestamp() != null) {
-                    return false;
-                }
-                if (logEntry.getSpec() == null || logEntry.getSpec().getDeletedAt() == null) {
-                    return false;
-                }
-                // 只删除超过保留期限的日志
-                return logEntry.getSpec().getDeletedAt().isBefore(cutoff);
-            })
+        // 通过 spec.deletedAt 时间索引直接定位过期区间，避免全量遍历
+        var listOptions = ListOptions.builder()
+            .andQuery(lessThan("spec.deletedAt", cutoff.toString()))
+            .build();
+        return client.listAll(CleanupLog.class, listOptions, Sort.unsorted())
+            // 跳过已标记删除的
+            .filter(logEntry -> logEntry.getMetadata() == null
+                || logEntry.getMetadata().getDeletionTimestamp() == null)
             .flatMap(logEntry -> client.delete(logEntry).then(), 100)
             .then()
             .doOnSuccess(v -> log.info("已清理过期清理日志，保留 {} 天", retentionDays));

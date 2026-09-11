@@ -20,6 +20,7 @@ import java.util.UUID;
 
 import static run.halo.app.extension.index.query.Queries.contains;
 import static run.halo.app.extension.index.query.Queries.equal;
+import static run.halo.app.extension.index.query.Queries.lessThan;
 import static run.halo.app.extension.index.query.Queries.or;
 
 /**
@@ -147,16 +148,13 @@ public class UrlReplaceLogServiceImpl implements UrlReplaceLogService {
             .atStartOfDay(java.time.ZoneId.systemDefault())
             .toInstant();
 
-        return client.listAll(UrlReplaceLog.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(logEntry -> {
-                if (logEntry.getMetadata() != null && logEntry.getMetadata().getDeletionTimestamp() != null) {
-                    return false;
-                }
-                if (logEntry.getSpec() == null || logEntry.getSpec().getReplacedAt() == null) {
-                    return false;
-                }
-                return logEntry.getSpec().getReplacedAt().isBefore(cutoff);
-            })
+        // 通过 spec.replacedAt 时间索引直接定位过期区间，避免全量遍历
+        var listOptions = ListOptions.builder()
+            .andQuery(lessThan("spec.replacedAt", cutoff.toString()))
+            .build();
+        return client.listAll(UrlReplaceLog.class, listOptions, Sort.unsorted())
+            .filter(logEntry -> logEntry.getMetadata() == null
+                || logEntry.getMetadata().getDeletionTimestamp() == null)
             .flatMap(logEntry -> client.delete(logEntry).then(), 100)
             .then()
             .doOnSuccess(v -> log.info("已清理过期的 URL 替换日志，保留 {} 天", retentionDays));

@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import static run.halo.app.extension.index.query.Queries.contains;
 import static run.halo.app.extension.index.query.Queries.equal;
+import static run.halo.app.extension.index.query.Queries.lessThan;
 
 /**
  * 处理日志服务实现
@@ -163,6 +164,7 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
     /**
      * 删除过期日志
      * 根据保留天数删除超过期限的日志（按日期截断，删除 N 天前的日志）
+     * 通过 spec.processedAt 时间索引直接定位过期区间，避免全量遍历
      *
      * @param retentionDays 保留天数
      * @return 完成信号
@@ -177,18 +179,14 @@ public class ProcessingLogServiceImpl implements ProcessingLogService {
             .atStartOfDay(java.time.ZoneId.systemDefault())
             .toInstant();
 
-        return client.listAll(ProcessingLog.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(log -> {
-                // 跳过已标记删除的
-                if (log.getMetadata() != null && log.getMetadata().getDeletionTimestamp() != null) {
-                    return false;
-                }
-                if (log.getSpec() == null || log.getSpec().getProcessedAt() == null) {
-                    return false;
-                }
-                // 只删除超过保留期限的日志
-                return log.getSpec().getProcessedAt().isBefore(cutoff);
-            })
+        // 时间索引存 Instant.toString()（ISO-8601），字典序即时间序；cutoff 无小数秒，
+        // 故同秒内带小数秒的记录也会落入 lessThan，误差 <1s，对按天保留无影响
+        var listOptions = ListOptions.builder()
+            .andQuery(lessThan("spec.processedAt", cutoff.toString()))
+            .build();
+        return client.listAll(ProcessingLog.class, listOptions, Sort.unsorted())
+            // 跳过已标记删除的
+            .filter(log -> log.getMetadata() == null || log.getMetadata().getDeletionTimestamp() == null)
             .flatMap(log -> client.delete(log).then(), 100)
             .then()
             .doOnSuccess(v -> log.info("Deleted expired processing logs older than {} days", retentionDays));
