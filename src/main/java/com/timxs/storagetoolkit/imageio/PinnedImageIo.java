@@ -53,7 +53,44 @@ public class PinnedImageIo {
     private volatile ImageWriterSpi webpWriterSpi;
     private volatile ImageReaderSpi avifReaderSpi;
     private volatile ImageWriterSpi avifWriterSpi;
-    private volatile boolean spisLoaded;
+    private volatile boolean webpLoaded;
+    private volatile boolean avifLoaded;
+    private volatile boolean webpAllowed = true;
+    private volatile boolean avifAllowed = true;
+
+    /** Missing resources must not trigger failed static initializers before installation. */
+    public synchronized void configureAvailableFormats(boolean webp, boolean avif) {
+        if (!webpAllowed && webp) webpLoaded = false;
+        if (!avifAllowed && avif) avifLoaded = false;
+        webpAllowed = webp;
+        avifAllowed = avif;
+    }
+
+    public boolean isFormatAllowed(String format) {
+        return "avif".equalsIgnoreCase(format) ? avifAllowed : !"webp".equalsIgnoreCase(format) || webpAllowed;
+    }
+
+    public void selfTest(String format) throws IOException {
+        if (!isFormatAllowed(format)) throw new IOException(format + " 依赖尚未就绪");
+        ImageWriter writer = createPinnedWriter(format);
+        if (writer == null) throw new IOException(format + " 编码器不可用");
+        var sample = new BufferedImage(8, 8, BufferedImage.TYPE_3BYTE_BGR);
+        var bytes = new java.io.ByteArrayOutputStream();
+        try (var output = new javax.imageio.stream.MemoryCacheImageOutputStream(bytes)) {
+            writer.setOutput(output);
+            var options = writer.getDefaultWriteParam();
+            if (options.canWriteCompressed()) {
+                options.setCompressionMode(javax.imageio.ImageWriteParam.MODE_EXPLICIT);
+                String[] types = options.getCompressionTypes();
+                if (types != null && types.length > 0) options.setCompressionType(types[0]);
+                options.setCompressionQuality(0.7f);
+            }
+            writer.write(null, new javax.imageio.IIOImage(sample, null, null), options);
+        } finally { writer.dispose(); sample.flush(); }
+        var decoded = decodePinned(format, new ByteArrayInputStream(bytes.toByteArray()));
+        if (decoded == null || decoded.getWidth() != 8 || decoded.getHeight() != 8) throw new IOException(format + " 编解码自检失败");
+        decoded.flush();
+    }
 
     /**
      * 已注册到全局注册表的 SPI，用于插件停止时注销
@@ -66,16 +103,21 @@ public class PinnedImageIo {
      * 本插件自身的读写不依赖全局注册表（见 {@link #read(byte[])} 与 {@link #createPinnedWriter(String)}）
      */
     public void register() {
-        ensureSpisLoaded();
+        registerFormat("webp");
+        registerFormat("avif");
+    }
+
+    public void registerFormat(String format) {
+        ensureFormatLoaded(format);
         IIORegistry registry = IIORegistry.getDefaultInstance();
+        IIOServiceProvider[] services = "webp".equals(format)
+            ? new IIOServiceProvider[]{webpReaderSpi, webpWriterSpi}
+            : new IIOServiceProvider[]{avifReaderSpi, avifWriterSpi};
         synchronized (registeredSpis) {
-            for (IIOServiceProvider spi : List.of(webpReaderSpi, webpWriterSpi, avifReaderSpi, avifWriterSpi)) {
-                if (spi == null) {
-                    continue;
-                }
+            for (IIOServiceProvider spi : services) {
+                if (spi == null || registeredSpis.contains(spi)) continue;
                 registry.registerServiceProvider(spi);
                 registeredSpis.add(spi);
-                log.debug("{} 注册成功", spi.getClass().getName());
             }
         }
     }
@@ -93,7 +135,7 @@ public class PinnedImageIo {
                 try {
                     registry.deregisterServiceProvider(spi);
                     log.debug("SPI 注销成功: {}", spi.getClass().getName());
-                } catch (Exception e) {
+                } catch (Exception | LinkageError e) {
                     log.warn("SPI 注销失败: {} - {}", spi.getClass().getName(), e.getMessage());
                 }
             }
@@ -115,6 +157,7 @@ public class PinnedImageIo {
             return null;
         }
         String pinnedFormat = sniffFormat(data);
+        if (pinnedFormat != null && !isFormatAllowed(pinnedFormat)) throw new IOException(pinnedFormat + " 依赖未就绪，请前往环境检测");
         if (pinnedFormat != null) {
             try {
                 BufferedImage image = decodePinned(pinnedFormat, new ByteArrayInputStream(data));
@@ -151,7 +194,8 @@ public class PinnedImageIo {
      * @return Writer 实例，非固定格式或创建失败时返回 null
      */
     public ImageWriter createPinnedWriter(String formatName) {
-        ensureSpisLoaded();
+        if (!isFormatAllowed(formatName)) return null;
+        ensureFormatLoaded(formatName);
         ImageWriterSpi spi = switch (formatName == null ? "" : formatName.toLowerCase()) {
             case "webp" -> webpWriterSpi;
             case "avif" -> avifWriterSpi;
@@ -199,7 +243,8 @@ public class PinnedImageIo {
      * @return 解码结果，SPI 不可用时返回 null（调用方回退全局查找）
      */
     private BufferedImage decodePinned(String format, InputStream in) throws IOException {
-        ensureSpisLoaded();
+        if (!isFormatAllowed(format)) return null;
+        ensureFormatLoaded(format);
         ImageReaderSpi spi = "webp".equals(format) ? webpReaderSpi : avifReaderSpi;
         if (spi == null) {
             return null;
@@ -217,18 +262,19 @@ public class PinnedImageIo {
      * 懒加载 SPI 实例（插件启动注册与处理链固定解码共用）
      * 使用本组件自身的类加载器：生产环境为插件类加载器，测试环境为应用类加载器
      */
-    private synchronized void ensureSpisLoaded() {
-        if (spisLoaded) {
-            return;
+    private synchronized void ensureFormatLoaded(String format) {
+        ClassLoader loader = getClass().getClassLoader();
+        if ("webp".equalsIgnoreCase(format) && webpAllowed && !webpLoaded) {
+            preloadWebPClasses(loader);
+            webpReaderSpi = loadSpi(loader, WEBP_READER_SPI, ImageReaderSpi.class, "WebP");
+            webpWriterSpi = loadSpi(loader, WEBP_WRITER_SPI, ImageWriterSpi.class, "WebP");
+            webpLoaded = true;
+        } else if ("avif".equalsIgnoreCase(format) && avifAllowed && !avifLoaded) {
+            preloadAvifClasses(loader);
+            avifReaderSpi = loadSpi(loader, AVIF_READER_SPI, ImageReaderSpi.class, "AVIF");
+            avifWriterSpi = loadSpi(loader, AVIF_WRITER_SPI, ImageWriterSpi.class, "AVIF");
+            avifLoaded = true;
         }
-        ClassLoader classLoader = getClass().getClassLoader();
-        preloadWebPClasses(classLoader);
-        preloadAvifClasses(classLoader);
-        webpReaderSpi = loadSpi(classLoader, WEBP_READER_SPI, ImageReaderSpi.class, "WebP");
-        webpWriterSpi = loadSpi(classLoader, WEBP_WRITER_SPI, ImageWriterSpi.class, "WebP");
-        avifReaderSpi = loadSpi(classLoader, AVIF_READER_SPI, ImageReaderSpi.class, "AVIF");
-        avifWriterSpi = loadSpi(classLoader, AVIF_WRITER_SPI, ImageWriterSpi.class, "AVIF");
-        spisLoaded = true;
     }
 
     private <T extends IIOServiceProvider> T loadSpi(ClassLoader classLoader, String className,
@@ -236,7 +282,7 @@ public class PinnedImageIo {
         try {
             Class<?> spiClass = classLoader.loadClass(className);
             return spiType.cast(spiClass.getDeclaredConstructor().newInstance());
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
             log.warn("{} {} 加载失败: {}", formatName, spiType.getSimpleName(), e.getMessage());
             return null;
         }
@@ -311,7 +357,7 @@ public class PinnedImageIo {
                     log.warn("预加载 AVIF 类失败: {}", className);
                 }
             }
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
             log.warn("AVIF 初始化失败: {}", e.getMessage());
         } finally {
             // 恢复原来的 contextClassLoader

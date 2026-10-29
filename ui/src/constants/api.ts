@@ -4,6 +4,10 @@
 const API_PREFIX = '/apis/console.api.storage-toolkit.timxs.com/v1alpha1'
 
 export const API_ENDPOINTS = {
+  ENVIRONMENT: `${API_PREFIX}/environment`,
+  ENVIRONMENT_CHECK: `${API_PREFIX}/environment/check`,
+  ENVIRONMENT_INSTALL: (id: string) => `${API_PREFIX}/environment/dependencies/${encodeURIComponent(id)}/install`,
+
   // 统计
   STATISTICS: `${API_PREFIX}/statistics`,
 
@@ -53,6 +57,9 @@ export const API_ENDPOINTS = {
   BATCH_PROCESSING_STATUS: `${API_PREFIX}/batchprocessing/status`,
   BATCH_PROCESSING_SETTINGS: `${API_PREFIX}/batchprocessing/settings`,
   BATCH_PROCESSING_CANCEL: `${API_PREFIX}/batchprocessing/tasks/current`,
+
+  IMAGE_COMPARISON: (name: string) => `${API_PREFIX}/previews/images/${encodeURIComponent(name)}`,
+  OPERATION_PREVIEW: `${API_PREFIX}/previews/operations`,
 
   // 清理操作
   CLEANUP_DUPLICATES: (md5Hash: string) => `${API_PREFIX}/cleanup/duplicates/${md5Hash}`,

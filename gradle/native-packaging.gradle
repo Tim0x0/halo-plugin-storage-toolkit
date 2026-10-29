@@ -1,0 +1,51 @@
+import groovy.json.JsonOutput
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+
+// The release contains the common server targets. Other platforms can install pinned resources.
+def nativeLibraries = [
+    [id: 'sqlite', artifact: 'sqlite-jdbc-3.53.2.0.jar', version: '3.53.2.0', url: 'https://repo.maven.apache.org/maven2/org/xerial/sqlite-jdbc/3.53.2.0/sqlite-jdbc-3.53.2.0.jar'],
+    [id: 'webp', artifact: 'webp-imageio-0.10.2.jar', version: '0.10.2', url: 'https://repo.maven.apache.org/maven2/com/github/usefulness/webp-imageio/0.10.2/webp-imageio-0.10.2.jar'],
+    [id: 'avif', artifact: 'avif-imageio-0.2.0.jar', version: '0.2.0', url: 'https://jitpack.io/com/github/Tim0x0/avif-imageio/0.2.0/avif-imageio-0.2.0.jar']
+]
+def nativeFile = { String path -> path ==~ /.*\.(so|dll|dylib|jnilib)$/ }
+def commonNative = { String path ->
+    path.startsWith('native/linux/64/') || path.startsWith('native/linux/arm64/') ||
+    path.startsWith('native/Linux/x86_64/') || path.startsWith('native/Linux/aarch64/') ||
+    path.startsWith('org/sqlite/native/Linux/x86_64/') || path.startsWith('org/sqlite/native/Linux/aarch64/') ||
+    path.startsWith('org/sqlite/native/Linux-Musl/x86_64/') || path.startsWith('org/sqlite/native/Linux-Musl/aarch64/')
+}
+
+tasks.register('generateNativeCatalog') {
+    def output = layout.buildDirectory.dir('generated/native-resources')
+    inputs.files(configurations.runtimeClasspath)
+    inputs.property('catalogFormat', 1)
+    inputs.property('catalogDefinitions', JsonOutput.toJson(nativeLibraries))
+    outputs.dir(output)
+    doLast {
+        def digest = { byte[] bytes -> MessageDigest.getInstance('SHA-256').digest(bytes).encodeHex().toString() }
+        def catalog = nativeLibraries.collect { library ->
+            File artifact = configurations.runtimeClasspath.files.find { it.name == library.artifact }
+            if (artifact == null) throw new GradleException("Missing native artifact: ${library.artifact}")
+            def resources = []
+            new ZipFile(artifact).withCloseable { zip ->
+                zip.entries().each { entry ->
+                    if (!entry.directory && nativeFile(entry.name)) {
+                        byte[] bytes = zip.getInputStream(entry).withCloseable { it.readAllBytes() }
+                        resources.add([path: entry.name, size: bytes.length, sha256: digest(bytes), bundled: commonNative(entry.name)])
+                    }
+                }
+            }
+            [id: library.id, version: library.version, url: library.url, artifactSize: artifact.length(),
+             artifactSha256: digest(artifact.bytes), resources: resources]
+        }
+        def file = output.get().file('native-dependencies.json').asFile
+        file.parentFile.mkdirs()
+        file.text = JsonOutput.prettyPrint(JsonOutput.toJson(catalog))
+    }
+}
+sourceSets.main.resources.srcDir(layout.buildDirectory.dir('generated/native-resources'))
+tasks.named('processResources') { dependsOn tasks.named('generateNativeCatalog') }
+tasks.named('jar', Jar) {
+    exclude { details -> nativeFile(details.path) && !commonNative(details.path) }
+}

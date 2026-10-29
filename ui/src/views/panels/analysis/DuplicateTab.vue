@@ -141,7 +141,7 @@
   <!-- 删除确认对话框 -->
   <VModal
     v-model:visible="showDeleteDialog"
-    :width="480"
+    :width="720"
     mount-to-body
     title="确认删除重复附件"
     @close="handleDeleteCancel"
@@ -175,15 +175,18 @@
           <div class="confirm-option-hint">⚠️ 此功能会修改文章/页面/评论/设置中的链接内容</div>
         </div>
 
+        <OperationImpactPreview v-if="showDeleteDialog" operation="DUPLICATE"
+          :attachment-names="Object.values(selectedFiles).flat()" :groups="selectedFiles"
+          :replace-references="deleteReplaceReferences" @ready="previewEligibleNames = $event" />
         <!-- 底部提示 -->
         <div class="confirm-tip">
-          💡 建议先执行「引用扫描」以确保引用正确替换
+          影响预览读取当前引用，执行时再次核验。
         </div>
       </div>
     </template>
     <template #footer>
       <div class="confirm-footer">
-        <VButton type="danger" @click="handleDeleteConfirm">删除</VButton>
+        <VButton type="danger" :disabled="!previewEligibleNames.length" @click="handleDeleteConfirm">删除</VButton>
         <VButton @click="handleDeleteCancel">取消</VButton>
       </div>
     </template>
@@ -191,6 +194,7 @@
 </template>
 
 <script setup lang="ts">
+import OperationImpactPreview from '../components/OperationImpactPreview.vue'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { DuplicateStats, DuplicateGroup, DuplicateFile } from '@/types/duplicate'
 import { axiosInstance } from '@halo-dev/api-client'
@@ -304,7 +308,9 @@ const deleteSelected = () => {
 }
 
 // 确认删除
+const previewEligibleNames = ref<string[]>([])
 const handleDeleteConfirm = async () => {
+  if (!previewEligibleNames.value.length) return
   showDeleteDialog.value = false
 
   const toDeleteMap = { ...selectedFiles.value }
@@ -313,10 +319,11 @@ const handleDeleteConfirm = async () => {
 
   // 按组删除，每组独立处理
   for (const [md5Hash, attachmentNames] of Object.entries(toDeleteMap)) {
-    if (attachmentNames.length === 0) continue
+    const eligibleNames = attachmentNames.filter(name => previewEligibleNames.value.includes(name))
+    if (eligibleNames.length === 0) continue
     try {
       const { data } = await axiosInstance.delete(API_ENDPOINTS.CLEANUP_DUPLICATES(md5Hash), {
-        data: { attachmentNames, replaceReferences: deleteReplaceReferences.value }
+        data: { attachmentNames: eligibleNames, replaceReferences: deleteReplaceReferences.value }
       })
 
       totalDeleted += data.deletedCount || 0
@@ -330,7 +337,7 @@ const handleDeleteConfirm = async () => {
         })
       )
       // 只从 UI 移除实际删除成功的文件
-      const deleted = attachmentNames.filter((n: string) => !failedNames.has(n))
+      const deleted = eligibleNames.filter((n: string) => !failedNames.has(n))
       if (deleted.length > 0) {
         const group = duplicateGroups.value.find(g => g.md5Hash === md5Hash)
         if (group) {
@@ -344,7 +351,7 @@ const handleDeleteConfirm = async () => {
       }
     } catch {
       // HTTP 级别错误，整组视为失败
-      totalFailed += attachmentNames.length
+      totalFailed += eligibleNames.length
     }
   }
 

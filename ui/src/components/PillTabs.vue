@@ -1,10 +1,11 @@
 <template>
-  <nav class="st-pill-tabs">
+  <nav class="st-pill-tabs" aria-label="功能导航">
     <button
       v-for="tab in tabs"
       :key="tab.id"
       type="button"
       :class="['pill-btn', { active: modelValue === tab.id }]"
+      :aria-current="modelValue === tab.id ? 'page' : undefined"
       @click="$emit('update:modelValue', tab.id)"
     >
       <component :is="tab.icon" v-if="tab.icon" class="pill-icon" />
@@ -30,85 +31,33 @@ defineEmits<{
 <style scoped>
 .st-pill-tabs {
   display: flex;
-  gap: 2px;
-  background: var(--st-bg-surface);
-  padding: 6px;
-  border: 1px solid var(--st-border-card);
-  border-radius: var(--st-radius-lg);
-  box-shadow: var(--st-shadow-card);
+  gap: 26px;
+  border-bottom: 1px solid var(--st-border);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
-
 .pill-btn {
-  position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 9px 16px;
-  font-size: 14px;
-  font-weight: 500;
+  flex-shrink: 0;
+  gap: 7px;
+  min-height: 48px;
+  padding: 0 1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
   color: var(--st-text-secondary);
   background: transparent;
-  border: none;
-  border-radius: var(--st-radius-md);
-  cursor: pointer;
-  transition: var(--st-transition);
+  font: inherit;
+  font-size: 13px;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
 }
-
-.pill-btn:hover {
-  color: var(--st-text-primary);
-  background: var(--st-bg-muted);
-}
-
-.pill-btn.active {
-  color: var(--st-text-primary);
-  background: var(--st-bg-muted);
-}
-
-.pill-btn.active::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--st-color-primary);
-  flex-shrink: 0;
-}
-
-.pill-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.pill-count {
-  padding: 0 6px;
-  font-size: 12px;
-  line-height: 18px;
-  border-radius: 9px;
-  background: var(--st-bg-muted);
-  color: var(--st-text-secondary);
-}
-
-.pill-btn.active .pill-count {
-  background: var(--st-color-primary-soft);
-  color: var(--st-text-primary);
-}
-
-@media (max-width: 768px) {
-  .st-pill-tabs {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-}
-
-@media (max-width: 640px) {
-  .pill-btn {
-    padding: 8px 12px;
-    font-size: 13px;
-  }
-
-  .pill-icon {
-    display: none;
-  }
-}
+.pill-btn:hover { color: var(--st-text-primary); }
+.pill-btn.active { color: var(--st-text-primary); border-bottom-color: var(--st-text-primary); font-weight: 600; }
+.pill-btn:focus-visible { outline: 2px solid var(--st-focus-border); outline-offset: -5px; border-radius: 4px; }
+.pill-icon { width: 15px; height: 15px; flex-shrink: 0; }
+.pill-count { padding: 0 6px; font-size: 11px; border-radius: 8px; background: var(--st-bg-muted); }
+@media (max-width: 640px) { .st-pill-tabs { gap: 20px; } .pill-btn { min-height: 44px; } }
 </style>

@@ -7,8 +7,9 @@
         <VButton type="danger" ghost :disabled="scanning || !stats.lastScanTime" @click="clearRecords">清空记录</VButton>
         <VButton
           type="danger"
+          :loading="deleting"
           @click="deleteSelected"
-          :disabled="scanning || selectedAttachments.length === 0"
+          :disabled="scanning || deleting || selectedAttachments.length === 0"
           v-if="filterType === 'unreferenced' && attachmentList.length > 0"
         >
           删除选中 ({{ selectedAttachments.length }})
@@ -34,6 +35,12 @@
       type="warning"
       title="扫描范围"
       description="支持扫描文章、页面、评论、封面图、系统设置、插件设置、主题设置，可在插件设置中开启瞬间、图库和文档扫描"
+    />
+    <VAlert
+      v-if="cleanupErrors.length > 0"
+      type="warning"
+      title="部分附件未能删除"
+      :description="cleanupErrors.join('；')"
     />
 
     <!-- 统计概览 -->
@@ -157,14 +164,27 @@
       @reference-resolved="handleReferenceResolved"
     />
   </div>
+  <VModal v-model:visible="showCleanupPreview" title="删除影响预览" :width="720" mount-to-body>
+    <div class="st-scope">
+      <p>确认后将永久删除可执行的附件，跳过项会保留。</p>
+      <OperationImpactPreview v-if="showCleanupPreview" operation="UNREFERENCED"
+        :attachment-names="selectedAttachments" @ready="previewEligibleNames = $event" />
+    </div>
+    <template #footer>
+      <VButton type="danger" :disabled="!previewEligibleNames.length" @click="confirmCleanup">删除</VButton>
+      <VButton @click="showCleanupPreview = false">取消</VButton>
+    </template>
+  </VModal>
+
 </template>
 
 
 <script setup lang="ts">
+import OperationImpactPreview from '../components/OperationImpactPreview.vue'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { axiosInstance } from '@halo-dev/api-client'
-import { Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination, IconDashboard, IconLink, IconForbidLine, IconSave } from '@halo-dev/components'
+import { VModal, Dialog, Toast, VAlert, VButton, VEmpty, VLoading, VPagination, IconDashboard, IconLink, IconForbidLine, IconSave } from '@halo-dev/components'
 import { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from '@/constants/pagination'
 import { API_ENDPOINTS } from '@/constants/api'
 import { formatBytes, formatTime } from '@/utils/format'
@@ -199,10 +219,19 @@ interface StatsResponse {
   errorMessage: string | null
 }
 
+interface CleanupResultResponse {
+  deletedCount: number
+  failedCount: number
+  freedSize: number
+  errors: string[]
+}
+
 const route = useRoute()
 
 const loading = ref(false)
 const scanning = ref(false)
+const deleting = ref(false)
+const cleanupErrors = ref<string[]>([])
 const filterType = ref('all')
 const searchQuery = ref('')
 const page = ref(1)
@@ -281,34 +310,43 @@ const toggleSelect = (attachmentName: string) => {
   }
 }
 
+const showCleanupPreview = ref(false)
+const previewEligibleNames = ref<string[]>([])
 const deleteSelected = () => {
-  if (selectedAttachments.value.length === 0) return
-
-  Dialog.warning({
-    title: '确认删除附件',
-    description: `确定要永久删除选中的 ${selectedAttachments.value.length} 个附件文件吗？此操作将删除存储中的文件，不可恢复。`,
-    confirmType: 'danger',
-    confirmText: '删除',
-    cancelText: '取消',
-    async onConfirm() {
+  if (deleting.value || !selectedAttachments.value.length) return
+  showCleanupPreview.value = true
+}
+const confirmCleanup = async () => {
+  if (!previewEligibleNames.value.length) return
+  showCleanupPreview.value = false
+      deleting.value = true
+      cleanupErrors.value = []
       try {
-        const toDelete = [...selectedAttachments.value]
-        await axiosInstance.delete(API_ENDPOINTS.CLEANUP_UNREFERENCED, {
+        const toDelete = [...previewEligibleNames.value]
+        const { data } = await axiosInstance.delete<CleanupResultResponse>(API_ENDPOINTS.CLEANUP_UNREFERENCED, {
           data: { attachmentNames: toDelete }
         })
-        Toast.success('删除成功')
-        // 从前端列表中移除已删除项，不请求后端
-        attachmentList.value = attachmentList.value.filter(
-          item => !toDelete.includes(item.attachmentName)
+        cleanupErrors.value = data.errors || []
+        const failedNames = toDelete.filter(name =>
+          cleanupErrors.value.some(error => error.startsWith(`${name}: `))
         )
-        total.value = Math.max(0, total.value - toDelete.length)
-        selectedAttachments.value = []
+        // 无法逐项识别失败时保留选择，避免把失败项当作成功移除。
+        selectedAttachments.value = data.failedCount === 0 ? []
+          : failedNames.length === data.failedCount ? failedNames : toDelete
+        if (data.failedCount === 0) {
+          Toast.success(`删除成功，共 ${data.deletedCount} 个文件`)
+        } else if (data.deletedCount > 0) {
+          Toast.warning(`部分删除成功：${data.deletedCount} 个成功，${data.failedCount} 个失败`)
+        } else {
+          Toast.error(`删除失败，共 ${data.failedCount} 个文件未能删除`)
+        }
+        await Promise.all([fetchReferences(), fetchStats()])
       } catch (error: unknown) {
         const err = error as { response?: { data?: { message?: string } }; message?: string }
         Toast.error('删除失败: ' + (err.response?.data?.message || err.message || '未知错误'))
+      } finally {
+        deleting.value = false
       }
-    }
-  })
 }
 
 const toggleSort = (field: string) => {
@@ -349,6 +387,10 @@ const fetchReferences = async () => {
     const { data } = await axiosInstance.get(`${API_ENDPOINTS.REFERENCES}?${params.toString()}`)
     attachmentList.value = data.items || []
     total.value = data.total || 0
+    const lastPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+    if (page.value > lastPage) {
+      page.value = lastPage
+    }
   } catch (error) {
     console.error('获取引用列表失败:', error)
   } finally {

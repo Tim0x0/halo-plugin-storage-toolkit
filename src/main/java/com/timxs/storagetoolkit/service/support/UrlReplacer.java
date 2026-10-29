@@ -23,8 +23,8 @@ public final class UrlReplacer {
 
     /**
      * 在内容中替换 URL
-     * - 完整 URL：直接精确替换
-     * - 相对路径：使用正则确保不匹配完整 URL 中的相同路径
+     * 匹配完整的 URL，保留查询参数和片段，不匹配其他文件名的相同前缀。
+     * 相对路径也不能匹配完整 URL 的路径部分。
      *
      * @param content 原始内容
      * @param oldUrl 旧 URL（内容中实际存储的形式）
@@ -36,28 +36,12 @@ public final class UrlReplacer {
             return content;
         }
 
-        // 判断是相对路径还是完整 URL
-        // 相对路径以 / 开头但不是 // （// 是协议相对 URL）
-        boolean isRelativePath = oldUrl.startsWith("/") && !oldUrl.startsWith("//");
-
-        if (isRelativePath) {
-            // 相对路径：使用正则确保不匹配完整 URL 中的相同路径
-            // (?<![a-zA-Z0-9/]) 确保前面不是字母、数字或斜杠
-            // 这样 /upload/abc.png 不会匹配 https://example.com/upload/abc.png 中的路径部分
-            Pattern pattern = Pattern.compile(
-                "(?<![a-zA-Z0-9/])" + Pattern.quote(oldUrl)
-            );
-            return pattern.matcher(content).replaceAll(Matcher.quoteReplacement(newUrl));
-        } else {
-            // 完整 URL：直接精确替换
-            return content.replace(oldUrl, newUrl);
-        }
+        return urlPattern(oldUrl).matcher(content).replaceAll(Matcher.quoteReplacement(newUrl));
     }
 
     /**
      * 检查内容中是否包含指定的 URL
-     * - 完整 URL：直接检查
-     * - 相对路径：使用正则确保是独立的相对路径
+     * 与替换操作使用相同的 URL 边界。
      *
      * @param content 内容
      * @param url URL
@@ -68,19 +52,14 @@ public final class UrlReplacer {
             return false;
         }
 
-        // 判断是相对路径还是完整 URL
-        boolean isRelativePath = url.startsWith("/") && !url.startsWith("//");
+        return urlPattern(url).matcher(content).find();
+    }
 
-        if (isRelativePath) {
-            // 相对路径：使用正则确保不匹配完整 URL 中的相同路径
-            Pattern pattern = Pattern.compile(
-                "(?<![a-zA-Z0-9/])" + Pattern.quote(url)
-            );
-            return pattern.matcher(content).find();
-        } else {
-            // 完整 URL：直接检查
-            return content.contains(url);
-        }
+    private static Pattern urlPattern(String url) {
+        // 左边不能是 URL 中的字符，避免匹配其他域名、路径或文件名内部。
+        // 右边必须结束于 HTML/JSON/Markdown 分隔符，或保留的 query/fragment。
+        return Pattern.compile("(?<![\\p{L}\\p{N}_~:/?#@!$&%+.-])" + Pattern.quote(url)
+            + "(?=$|[\\s\"'<>\\)\\]\\}]|[?#])");
     }
 
     /**

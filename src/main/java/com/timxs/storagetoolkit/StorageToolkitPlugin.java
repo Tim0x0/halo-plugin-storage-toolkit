@@ -2,6 +2,8 @@ package com.timxs.storagetoolkit;
 
 import com.timxs.storagetoolkit.extension.AttachmentReference;
 import com.timxs.storagetoolkit.imageio.PinnedImageIo;
+import com.timxs.storagetoolkit.service.impl.BatchProcessingServiceImpl;
+import com.timxs.storagetoolkit.environment.NativeEnvironmentService;
 import com.timxs.storagetoolkit.extension.BatchProcessingStatus;
 import com.timxs.storagetoolkit.extension.BrokenLink;
 import com.timxs.storagetoolkit.extension.BrokenLinkScanStatus;
@@ -41,6 +43,8 @@ public class StorageToolkitPlugin extends BasePlugin {
      * 固定 ImageIO 编解码器，持有本插件的 WebP/AVIF SPI 实例并管理全局注册表注册
      */
     private final PinnedImageIo pinnedImageIo;
+    private final NativeEnvironmentService environment;
+    private final BatchProcessingServiceImpl batchService;
 
     /**
      * 构造函数
@@ -50,10 +54,13 @@ public class StorageToolkitPlugin extends BasePlugin {
      * @param pinnedImageIo 固定 ImageIO 编解码器
      */
     public StorageToolkitPlugin(PluginContext pluginContext, SchemeManager schemeManager,
-                                PinnedImageIo pinnedImageIo) {
+                                PinnedImageIo pinnedImageIo, NativeEnvironmentService environment,
+                                BatchProcessingServiceImpl batchService) {
         super(pluginContext);
         this.schemeManager = schemeManager;
         this.pinnedImageIo = pinnedImageIo;
+        this.environment = environment;
+        this.batchService = batchService;
     }
 
     /**
@@ -181,7 +188,8 @@ public class StorageToolkitPlugin extends BasePlugin {
         });
 
         // 注册本插件的 WebP/AVIF SPI（全局注册表 + 固定实例，解决插件类加载器隔离与外来 SPI 劫持问题）
-        pinnedImageIo.register();
+        environment.start();
+        batchService.prepareStart();
 
         log.info("Storage Toolkit 插件启动成功！");
     }
@@ -193,6 +201,9 @@ public class StorageToolkitPlugin extends BasePlugin {
     @Override
     public void stop() {
         log.info("Storage Toolkit 插件停止中...");
+
+        environment.stop();
+        batchService.stopAndDrain();
 
         // 注销 ImageIO SPI
         pinnedImageIo.unregister();

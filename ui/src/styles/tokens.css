@@ -5,48 +5,46 @@
  * 变量挂在 .st-scope 上（插件根 wrapper 与每个 mount-to-body 弹窗的内容根都需带此类），
  * 避免泄漏到 Halo Console 全局。
  *
- * 对齐基准：Halo 官方 token（主色 #4CCBA0、卡片描边 #eaecf0、圆角 base 4px、
- * 过渡 150ms cubic-bezier(0.4,0,0.2,1)、状态色 border-300/bg-50/text-600/700 约定），
- * 灰阶统一采用 zinc 系；卡片圆角/阴影为现代化调整值。
+ * 参考 LingUI / Auth UI 后台：中性灰、细边框、绿色状态提示与轻量布局。
  */
 .st-scope {
   /* ===== 文字 ===== */
-  --st-text-primary: #18181b;
-  --st-text-secondary: #71717a;
-  --st-text-tertiary: #a1a1aa;
+  --st-text-primary: #0d0d0d;
+  --st-text-secondary: #646464;
+  --st-text-tertiary: #8f8f8f;
   --st-text-inverse: #ffffff;
 
   /* ===== 边框 ===== */
-  --st-border-card: #eaecf0;   /* Halo 官方卡片描边 */
-  --st-border: #e4e4e7;        /* 表格线/分割线/输入框默认 */
-  --st-border-subtle: #f4f4f5;
-  --st-border-input: #d9d9d9;  /* Halo 默认按钮/Tag 边框 */
+  --st-border-card: #e5e5e5;   /* Halo 官方卡片描边 */
+  --st-border: #e5e5e5;        /* 表格线/分割线/输入框默认 */
+  --st-border-subtle: #f4f4f4;
+  --st-border-input: #e5e5e5;  /* Halo 默认按钮/Tag 边框 */
 
   /* ===== 背景 ===== */
-  --st-bg-page: var(--color-fill-secondary, #f4f4f5);
+  --st-bg-page: #ffffff;
   --st-bg-surface: #ffffff;
-  --st-bg-hover: #fafafa;      /* 行 hover 统一 */
-  --st-bg-muted: #f4f4f5;      /* tab active 底/默认 tag 底/code 底 */
+  --st-bg-hover: #f9f9f9;      /* 行 hover 统一 */
+  --st-bg-muted: #f4f4f4;      /* tab active 底/默认 tag 底/code 底 */
 
   /* ===== 品牌（Halo 主色） ===== */
-  --st-color-primary: #4ccba0;
-  --st-color-primary-soft: rgba(76, 203, 160, 0.15);
+  --st-color-primary: #267566;
+  --st-color-primary-soft: rgba(38, 117, 102, 0.10);
 
   /* ===== 语义状态（Halo 约定：border-300 / bg-50 / text-600 / text-700） ===== */
-  --st-success-border: #86efac;
-  --st-success-bg: #f0fdf4;
-  --st-success-text: #16a34a;
-  --st-success-text-strong: #15803d;
+  --st-success-border: #cce1d7;
+  --st-success-bg: #f0f7f4;
+  --st-success-text: #267566;
+  --st-success-text-strong: #267566;
 
-  --st-error-border: #fca5a5;
-  --st-error-bg: #fef2f2;
-  --st-error-text: #dc2626;
-  --st-error-text-strong: #b91c1c;
+  --st-error-border: #f1c4bf;
+  --st-error-bg: #fff5f4;
+  --st-error-text: #b42318;
+  --st-error-text-strong: #b42318;
 
-  --st-warning-border: #fdba74;
-  --st-warning-bg: #fff7ed;
-  --st-warning-text: #ea580c;
-  --st-warning-text-strong: #c2410c;
+  --st-warning-border: #ead3b4;
+  --st-warning-bg: #fbf7f0;
+  --st-warning-text: #a25c19;
+  --st-warning-text-strong: #945218;
 
   --st-info-border: #7dd3fc;
   --st-info-bg: #f0f9ff;
@@ -60,11 +58,11 @@
   /* ===== 圆角 ===== */
   --st-radius-sm: 4px;   /* tag/badge/小按钮，Halo base */
   --st-radius-md: 8px;   /* 输入框/内嵌块 */
-  --st-radius-lg: 10px;  /* 卡片/面板 */
+  --st-radius-lg: 12px;  /* 卡片/面板 */
 
   /* ===== 阴影 ===== */
-  --st-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --st-shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --st-shadow-card: none;
+  --st-shadow-card-hover: none;
 
   /* ===== 动效（Halo 官方过渡） ===== */
   --st-duration: 150ms;
@@ -75,7 +73,7 @@
   --st-tag-blue-bg: #dbeafe;
   --st-tag-blue-text: #1d4ed8;
   --st-tag-green-bg: #dcfce7;
-  --st-tag-green-text: #15803d;
+  --st-tag-green-text: #267566;
   --st-tag-teal-bg: #ccfbf1;
   --st-tag-teal-text: #0f766e;
   --st-tag-pink-bg: #fce7f3;
@@ -83,13 +81,49 @@
   --st-tag-purple-bg: #f3e8ff;
   --st-tag-purple-text: #7c3aed;
   --st-tag-orange-bg: #ffedd5;
-  --st-tag-orange-text: #c2410c;
+  --st-tag-orange-text: #945218;
   --st-tag-indigo-bg: #e0e7ff;
   --st-tag-indigo-text: #4338ca;
   --st-tag-cyan-bg: #cffafe;
   --st-tag-cyan-text: #0891b2;
   --st-tag-amber-bg: #fef3c7;
   --st-tag-amber-text: #b45309;
-  --st-tag-neutral-bg: #f4f4f5;
+  --st-tag-neutral-bg: #f4f4f4;
   --st-tag-neutral-text: #3f3f46;
+}
+
+/* Shared neutral workbench palette, scoped to this plugin and its dialogs. */
+:where(.dark, [data-theme='dark'], [data-color-scheme='dark']) .st-scope {
+  --st-text-primary: #ececec;
+  --st-text-secondary: #a0a0a0;
+  --st-text-tertiary: #898989;
+  --st-text-inverse: #212121;
+  --st-border-card: #3a3a3a;
+  --st-border: #3a3a3a;
+  --st-border-subtle: #2f2f2f;
+  --st-border-input: #454545;
+  --st-bg-page: #212121;
+  --st-bg-surface: #212121;
+  --st-bg-hover: #292929;
+  --st-bg-muted: #2f2f2f;
+  --st-color-primary: #89c7b2;
+  --st-color-primary-soft: #253a32;
+  --st-success-bg: #253a32;
+  --st-success-border: #345346;
+  --st-success-text: #89c7b2;
+  --st-success-text-strong: #89c7b2;
+  --st-error-bg: #3e2827;
+  --st-error-border: #69413b;
+  --st-error-text: #ff938a;
+  --st-error-text-strong: #ff938a;
+  --st-warning-bg: #383025;
+  --st-warning-border: #665338;
+  --st-warning-text: #ddbb85;
+  --st-warning-text-strong: #ddbb85;
+  --st-info-bg: #25323b;
+  --st-info-border: #395a70;
+  --st-info-text: #9ac4db;
+  --st-info-text-strong: #9ac4db;
+  --st-tag-neutral-bg: #2f2f2f;
+  --st-tag-neutral-text: #b5b5b5;
 }

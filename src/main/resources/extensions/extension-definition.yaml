@@ -3,7 +3,7 @@ kind: ExtensionDefinition
 metadata:
   name: storage-toolkit-image-processing-webfilter
 spec:
-  extensionPointName: additional-webfilter
+  extensionPointName: after-security-webfilter
   className: com.timxs.storagetoolkit.filter.ImageProcessingWebFilter
   displayName: 图片处理过滤器
   description: 存储工具箱插件的图片处理过滤器，拦截附件上传请求进行图片格式转换（WebP）、水印添加（文字/图片）等处理。插件还提供存储统计分析、重复文件检测、附件引用扫描等功能。

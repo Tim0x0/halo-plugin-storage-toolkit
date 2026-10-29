@@ -32,6 +32,10 @@ public class ReferenceReplacementResult {
     @Builder.Default
     private Map<String, Integer> typeStats = new HashMap<>();
 
+    /** Content sources whose references could not be fully migrated. */
+    @Builder.Default
+    private Map<String, String> errors = new HashMap<>();
+
     /**
      * 执行时间
      */
@@ -48,5 +52,15 @@ public class ReferenceReplacementResult {
     public synchronized void incrementTypeCount(String sourceType) {
         typeStats.merge(sourceType, 1, Integer::sum);
         updatedSources++;
+    }
+
+    public synchronized void addFailure(String sourceType, String sourceName, String reason) {
+        errors.put(sourceType + "/" + sourceName, reason);
+    }
+
+    public void requireSuccess() {
+        if (!errors.isEmpty()) {
+            throw new IllegalStateException("引用替换未完成，已保留原附件: " + errors);
+        }
     }
 }

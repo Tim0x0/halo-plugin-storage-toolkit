@@ -1,7 +1,7 @@
 <template>
   <VModal
     :title="attachment.displayName"
-    :width="600"
+    :width="960"
     mount-to-body
     :layer-closable="true"
     @close="$emit('close')"
@@ -16,6 +16,7 @@
         <span class="preview-icon">{{ getFileIcon(attachment.mediaType ?? null) }}</span>
       </div>
 
+      <ImageProcessingComparison v-if="isImage(attachment.mediaType)" :attachment-name="attachment.name" />
       <!-- 文件信息 -->
       <div class="info-section">
         <div class="st-field-list">
@@ -47,6 +48,7 @@
 
 <script setup lang="ts">
 import { VModal } from '@halo-dev/components'
+import ImageProcessingComparison from './ImageProcessingComparison.vue'
 import { formatBytes } from '@/utils/format'
 import { getFileIcon, isImage } from '@/composables/useReferenceSource'
 

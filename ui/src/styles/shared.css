@@ -173,3 +173,28 @@
   color: var(--st-text-primary);
   word-break: break-all;
 }
+
+/* Workbench proportions follow LingUI / Auth UI while preserving the existing actions. */
+.st-scope {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.st-scope *, .st-scope *::before, .st-scope *::after { box-sizing: border-box; }
+.st-scope :focus-visible { outline: 2px solid var(--st-focus-border); outline-offset: 3px; }
+.st-scope .st-section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; margin-bottom: 26px; }
+.st-scope .st-section-heading h1 { font-size: 25px; line-height: 1.4; letter-spacing: -0.6px; font-weight: 600; margin: 0; }
+.st-scope .st-section-heading p { font-size: 13px; color: var(--st-text-secondary); margin: 8px 0 0; line-height: 1.7; }
+.st-scope .btn { min-height: 36px; border-radius: 9px; font-size: 12px; box-shadow: none; }
+.st-scope .btn-secondary { color: var(--st-bg-surface); background: var(--st-text-primary); border-color: var(--st-text-primary); }
+.st-scope .btn-secondary:hover { opacity: 0.88; }
+.st-scope .btn-danger:not(.btn-ghost) { background: var(--st-error-text-strong); border-color: var(--st-error-text-strong); }
+.st-scope .btn:disabled { opacity: 0.4; }
+.st-scope .st-table { color: var(--st-text-primary); }
+.st-scope .st-table th { font-weight: 500; font-size: 12px; padding-top: 14px; padding-bottom: 14px; background: var(--st-bg-hover); }
+.st-scope .st-table td { padding-top: 15px; padding-bottom: 15px; }
+.st-scope .st-table input[type='checkbox'] { accent-color: var(--st-text-primary); }
+.st-scope .st-tag { font-size: 11px; font-weight: 450; border-radius: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  .st-scope *, .st-scope *::before, .st-scope *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
