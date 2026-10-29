@@ -44,8 +44,6 @@ nbdist/
 ### VSCode
 *.project
 *.factorypath
-.vscode
-!.vscode/extensions.json
 
 ### Compiled class file
 *.class
@@ -77,7 +75,6 @@ application-local.properties
 
 /ui/build/
 /workplace/
-/src/main/resources/console/
 
 ### Claude Code
 .claude/

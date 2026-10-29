@@ -12,7 +12,7 @@ export default definePlugin({
       route: {
         path: '/storage-toolkit',
         name: 'StorageToolkit',
-        component: () => import(/* webpackChunkName: "storage-toolkit-view" */ './views/StorageToolkitView.vue'),
+        component: () => import('./views/StorageToolkitView.vue'),
         meta: {
           permissions: ['plugin:storage-toolkit:manage'],
           menu: {
