@@ -2,14 +2,12 @@ package com.timxs.storagetoolkit.service;
 
 import com.timxs.storagetoolkit.endpoint.BatchProcessingEndpoint.SettingsResponse;
 import com.timxs.storagetoolkit.extension.BatchProcessingStatus;
+
 import reactor.core.publisher.Mono;
 
 import java.util.List;
 
-/**
- * 批量处理服务接口
- * 负责批量处理任务的创建、执行、取消和状态管理
- */
+/** 批量处理服务接口 负责批量处理任务的创建、执行、取消和状态管理 */
 public interface BatchProcessingService {
 
     /**
@@ -23,14 +21,14 @@ public interface BatchProcessingService {
 
     /**
      * 取消当前任务
-     * 
+     *
      * @return 任务状态
      */
     Mono<BatchProcessingStatus> cancelTask();
 
     /**
      * 获取当前任务状态
-     * 
+     *
      * @return 任务状态
      */
     Mono<BatchProcessingStatus> getStatus();
@@ -41,4 +39,12 @@ public interface BatchProcessingService {
      * @return 设置响应
      */
     Mono<SettingsResponse> getSettings();
+
+    Mono<run.halo.app.extension.ListResult<BatchProcessingStatus>> listTasks(int page, int size);
+
+    Mono<BatchProcessingStatus> requireTask(String name);
+
+    Mono<BatchProcessingStatus> resumeTask(String name);
+
+    Mono<BatchProcessingStatus> retryFailed(String name);
 }

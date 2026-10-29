@@ -8,6 +8,7 @@ import run.halo.app.infra.ExternalLinkProcessor;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 import lombok.extern.slf4j.Slf4j;
@@ -116,6 +117,23 @@ public class ReferenceScanContext {
         } else {
             addRelativePath(url, source);
         }
+    }
+
+    /** Find current references without matching paths from a different origin. */
+    public Set<AttachmentReference.ReferenceSource> findSources(String permalink) {
+        if (!StringUtils.hasText(permalink)) {
+            return Set.of();
+        }
+        Set<AttachmentReference.ReferenceSource> sources = new HashSet<>(
+            fullUrlToSources.getOrDefault(permalink, Set.of()));
+        if (!contentScanner.isFullUrl(permalink)) {
+            String fullUrl = externalLinkProcessor.processLink(permalink);
+            if (StringUtils.hasText(fullUrl)) {
+                sources.addAll(fullUrlToSources.getOrDefault(fullUrl, Set.of()));
+            }
+            sources.addAll(relativePathToSources.getOrDefault(permalink, Set.of()));
+        }
+        return sources;
     }
 
     /**

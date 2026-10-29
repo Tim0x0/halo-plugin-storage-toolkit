@@ -40,6 +40,7 @@ public class LogCleanupScheduler {
      * URL 替换日志服务
      */
     private final UrlReplaceLogService urlReplaceLogService;
+    private final com.timxs.storagetoolkit.storage.StorageRuntime storage;
 
     /**
      * 每天凌晨 2 点执行清理任务
@@ -47,6 +48,7 @@ public class LogCleanupScheduler {
      */
     @Scheduled(cron = "0 0 2 * * ?")
     public void cleanupExpiredLogs() {
+        if (!storage.isReady()) return;
         log.info("Starting scheduled log cleanup task");
 
         // 获取配置并执行清理

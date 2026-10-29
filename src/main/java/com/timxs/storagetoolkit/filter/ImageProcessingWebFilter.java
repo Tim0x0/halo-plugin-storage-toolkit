@@ -32,7 +32,7 @@ import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import run.halo.app.security.AdditionalWebFilter;
+import run.halo.app.security.AfterSecurityWebFilter;
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -48,11 +48,12 @@ import java.util.function.Supplier;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ImageProcessingWebFilter implements AdditionalWebFilter {
+public class ImageProcessingWebFilter implements AfterSecurityWebFilter {
 
     private final ImageProcessor imageProcessor;
     private final SettingsManager settingsManager;
     private final ProcessingLogService processingLogService;
+    private final com.timxs.storagetoolkit.storage.StorageRuntime storage;
 
     private final DefaultDataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
@@ -156,6 +157,7 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
      */
     private Mono<Void> preCheckAndProcess(ServerWebExchange exchange, WebFilterChain chain,
                                            Supplier<Mono<Void>> processor) {
+        if (!storage.isReady()) return chain.filter(exchange);
         long contentLength = exchange.getRequest().getHeaders().getContentLength();
         if (contentLength <= 0) {
             // Content-Length = -1（未知），直接放行不处理
@@ -574,11 +576,6 @@ public class ImageProcessingWebFilter implements AdditionalWebFilter {
                 saved -> log.debug("Skipped log saved: {}", saved.getMetadata().getName()),
                 error -> log.error("Failed to save skipped log", error)
             );
-    }
-
-    @Override
-    public int getOrder() {
-        return -1000;  // 确保最先执行，避免与其他插件冲突
     }
 
     /**

@@ -6,6 +6,7 @@ import com.timxs.storagetoolkit.extension.DuplicateScanStatus;
 import com.timxs.storagetoolkit.extension.ReferenceScanStatus;
 import com.timxs.storagetoolkit.model.CleanupReason;
 import com.timxs.storagetoolkit.model.CleanupResult;
+import com.timxs.storagetoolkit.model.ReferenceReplacementResult;
 import com.timxs.storagetoolkit.model.DuplicateGroupVo;
 import com.timxs.storagetoolkit.service.CleanupLogService;
 import com.timxs.storagetoolkit.service.DuplicateService;
@@ -721,6 +722,7 @@ public class DuplicateServiceImpl implements DuplicateService {
         if (attachmentNames == null || attachmentNames.isEmpty()) {
             return Mono.error(new IllegalArgumentException("附件列表不能为空"));
         }
+        List<String> requestedNames = new ArrayList<>(new LinkedHashSet<>(attachmentNames));
 
         // 默认值为 true（保持向后兼容）
         boolean shouldReplace = replaceReferences == null || replaceReferences;
@@ -729,16 +731,21 @@ public class DuplicateServiceImpl implements DuplicateService {
 
         // 查找重复组
         return client.listAll(DuplicateGroup.class, ListOptions.builder().build(), Sort.unsorted())
+            .filter(group -> group.getMetadata().getDeletionTimestamp() == null
+                && (group.getStatus() == null || !Boolean.TRUE.equals(group.getStatus().getPendingDelete())))
             .filter(group -> group.getSpec() != null && groupMd5.equals(group.getSpec().getMd5Hash()))
             .next()
             .switchIfEmpty(Mono.error(new IllegalArgumentException("重复组不存在: " + groupMd5)))
             .flatMap(group -> {
-                List<String> groupAttachments = group.getStatus() != null 
-                    ? group.getStatus().getAttachmentNames() 
+                List<String> groupAttachments = group.getStatus() != null && group.getStatus().getAttachmentNames() != null
+                    ? group.getStatus().getAttachmentNames()
                     : Collections.emptyList();
 
+                if (!new HashSet<>(groupAttachments).containsAll(requestedNames)) {
+                    return Mono.error(new IllegalArgumentException("附件列表包含不属于当前重复组的文件"));
+                }
                 // 验证：不能删除组内所有文件
-                Set<String> toDelete = new HashSet<>(attachmentNames);
+                Set<String> toDelete = new HashSet<>(requestedNames);
                 long remainingCount = groupAttachments.stream()
                     .filter(name -> !toDelete.contains(name))
                     .count();
@@ -758,9 +765,11 @@ public class DuplicateServiceImpl implements DuplicateService {
                 AtomicInteger deletedCount = new AtomicInteger(0);
                 java.util.concurrent.atomic.AtomicLong freedSize = new java.util.concurrent.atomic.AtomicLong(0);
 
-                return Flux.fromIterable(attachmentNames)
-                    .flatMap(attachmentName -> deleteAttachmentWithMerge(attachmentName, keptAttachmentName, shouldReplace, errors, deletedCount, freedSize))
-                    .then(Mono.defer(() -> updateDuplicateGroupAfterDelete(group, attachmentNames)
+                Set<String> deletedNames = ConcurrentHashMap.newKeySet();
+                return Flux.fromIterable(requestedNames)
+                    .flatMap(attachmentName -> deleteAttachmentWithMerge(attachmentName, keptAttachmentName,
+                        shouldReplace, errors, deletedCount, freedSize, deletedNames))
+                    .then(Mono.defer(() -> updateDuplicateGroupAfterDelete(group, new ArrayList<>(deletedNames))
                         .onErrorResume(e -> {
                             log.warn("更新重复组失败: {}", e.getMessage());
                             return Mono.empty();
@@ -772,7 +781,7 @@ public class DuplicateServiceImpl implements DuplicateService {
                         })))
                     .then(Mono.fromCallable(() -> new CleanupResult(
                         deletedCount.get(),
-                        attachmentNames.size() - deletedCount.get(),
+                        requestedNames.size() - deletedCount.get(),
                         freedSize.get(),
                         errors
                     )));
@@ -787,9 +796,11 @@ public class DuplicateServiceImpl implements DuplicateService {
                                                    boolean shouldReplace,
                                                    List<String> errors,
                                                    AtomicInteger deletedCount,
-                                                   java.util.concurrent.atomic.AtomicLong freedSize) {
+                                                   java.util.concurrent.atomic.AtomicLong freedSize,
+                                                   Set<String> deletedNames) {
         return client.fetch(Attachment.class, attachmentName)
             .filter(attachment -> attachment.getMetadata().getDeletionTimestamp() == null)
+            .switchIfEmpty(Mono.error(new IllegalStateException("附件不存在或已删除")))
             .flatMap(attachment -> {
                 String displayName = attachment.getSpec().getDisplayName();
                 long fileSize = attachment.getSpec().getSize() != null ? attachment.getSpec().getSize() : 0;
@@ -797,40 +808,42 @@ public class DuplicateServiceImpl implements DuplicateService {
 
                 // 如果需要合并引用，先执行引用替换
                 Mono<Void> mergeReferencesMono = Mono.empty();
-                if (shouldReplace && keptAttachmentName != null && !keptAttachmentName.equals(attachmentName)) {
+                if (shouldReplace) {
+                    if (keptAttachmentName == null || keptAttachmentName.equals(attachmentName)
+                        || deletedPermalink == null || deletedPermalink.isBlank()) {
+                        return Mono.error(new IllegalStateException("无法确认引用迁移目标，已保留原附件"));
+                    }
                     mergeReferencesMono = client.fetch(Attachment.class, keptAttachmentName)
-                        .flatMap(keptAttachment -> {
-                            String keptPermalink = keptAttachment.getStatus() != null ? keptAttachment.getStatus().getPermalink() : null;
-                            if (deletedPermalink != null && keptPermalink != null) {
-                                return referenceReplacerService.mergeReferencesBeforeDelete(
-                                        attachmentName, keptAttachmentName, deletedPermalink, keptPermalink)
-                                    .doOnSuccess(replaceResult -> {
-                                        if (replaceResult.getUpdatedSources() > 0) {
-                                            log.debug("删除重复附件前引用合并完成：{} -> {}，共更新 {} 个内容源",
-                                                attachmentName, keptAttachmentName, replaceResult.getUpdatedSources());
-                                        }
-                                    })
-                                    .doOnError(e -> log.warn("删除重复附件前引用合并失败: {}", e.getMessage()))
-                                    .onErrorResume(e -> Mono.empty()) // 引用合并失败不应影响主流程
-                                    .then();
+                        .filter(kept -> kept.getMetadata().getDeletionTimestamp() == null)
+                        .switchIfEmpty(Mono.error(new IllegalStateException("保留附件不存在或已删除")))
+                        .flatMap(kept -> {
+                            String keptPermalink = kept.getStatus() != null ? kept.getStatus().getPermalink() : null;
+                            if (keptPermalink == null || keptPermalink.isBlank()) {
+                                return Mono.error(new IllegalStateException("保留附件缺少链接，无法迁移引用"));
                             }
-                            return Mono.empty();
-                        })
-                        .onErrorResume(e -> {
-                            log.warn("获取保留附件 {} 失败: {}", keptAttachmentName, e.getMessage());
-                            return Mono.empty();
+                            return referenceReplacerService.mergeReferencesBeforeDelete(
+                                    attachmentName, keptAttachmentName, deletedPermalink, keptPermalink)
+                                .switchIfEmpty(Mono.error(new IllegalStateException("引用替换未返回结果")))
+                                .doOnNext(ReferenceReplacementResult::requireSuccess)
+                                .then();
                         });
                 }
 
                 // 先合并引用，再删除附件
                 return mergeReferencesMono
-                    .then(client.delete(attachment))
-                    .then(cleanupLogService.saveLog(attachmentName, displayName, fileSize, CleanupReason.DUPLICATE, null))
-                    .doOnSuccess(v -> {
+                    .then(Mono.defer(() -> client.delete(attachment)))
+                    .doOnNext(deleted -> {
+                        deletedNames.add(attachmentName);
                         deletedCount.incrementAndGet();
                         freedSize.addAndGet(fileSize);
                         log.debug("已删除重复文件: {}", displayName);
                     })
+                    .then(Mono.defer(() -> cleanupLogService.saveLog(
+                            attachmentName, displayName, fileSize, CleanupReason.DUPLICATE, null))
+                        .onErrorResume(error -> {
+                            log.warn("附件已删除，但保存清理日志失败: {}", attachmentName, error);
+                            return Mono.empty();
+                        }))
                     .then();
             })
             .onErrorResume(e -> {

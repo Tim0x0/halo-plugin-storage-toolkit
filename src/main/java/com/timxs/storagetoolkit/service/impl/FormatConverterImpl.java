@@ -80,6 +80,9 @@ public class FormatConverterImpl implements FormatConverter {
         if (targetFormat == null || targetFormat == ImageFormat.ORIGINAL) {
             throw new IllegalArgumentException("Target format must be specified and not ORIGINAL");
         }
+        if (!pinnedImageIo.isFormatAllowed(targetFormat.getExtension())) {
+            throw new IllegalStateException(targetFormat + " 依赖尚未就绪，请前往环境检测");
+        }
         if (!supportsFormat(targetFormat)) {
             throw new UnsupportedOperationException("Format not supported: " + targetFormat);
         }

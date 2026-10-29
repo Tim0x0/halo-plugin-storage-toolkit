@@ -7,7 +7,6 @@ import com.timxs.storagetoolkit.model.ReplaceResult;
 import com.timxs.storagetoolkit.model.ReplaceSource;
 import com.timxs.storagetoolkit.service.ReferenceReplacerService;
 import com.timxs.storagetoolkit.service.ReferenceService;
-import com.timxs.storagetoolkit.service.SettingsManager;
 import com.timxs.storagetoolkit.service.UrlReplaceLogService;
 import com.timxs.storagetoolkit.service.support.*;
 import run.halo.app.infra.ExternalLinkProcessor;
@@ -17,15 +16,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import run.halo.app.core.extension.attachment.Attachment;
-import run.halo.app.extension.ListOptions;
-import run.halo.app.extension.ReactiveExtensionClient;
-import org.springframework.data.domain.Sort;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -36,8 +30,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
 
-    private final ReactiveExtensionClient client;
-    private final SettingsManager settingsManager;
+    private final ReferenceContentScanner referenceContentScanner;
     private final UrlReplaceLogService urlReplaceLogService;
     private final ReferenceService referenceService;
     private final ExternalLinkProcessor externalLinkProcessor;
@@ -67,7 +60,7 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
 
         Instant startTime = Instant.now();
         ReferenceReplacementResult result = ReferenceReplacementResult.builder()
-            .totalAttachments(task.getAttachmentMapping().size())
+            .totalAttachments(task.getAttachmentMapping() != null ? task.getAttachmentMapping().size() : 0)
             .executedAt(startTime)
             .build();
 
@@ -100,6 +93,10 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
                         List<AttachmentReference.ReferenceSource> typeSources = entry.getValue();
                         return processSourceType(sourceType, typeSources, task, result);
                     }, DEFAULT_CONCURRENCY)
+                    .then(Mono.defer(() -> referenceContentScanner.scanAll()))
+                    .doOnNext(context -> task.getUrlMapping().keySet().forEach(url ->
+                        context.findSources(url).forEach(source -> result.addFailure(
+                            source.getSourceType(), source.getSourceName(), "替换后仍存在旧链接: " + url))))
                     .then(Mono.fromCallable(() -> {
                         result.setDurationMs(Duration.between(startTime, Instant.now()).toMillis());
                         log.info("引用替换任务完成，共更新 {} 个内容源",
@@ -173,17 +170,11 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
      * 收集所有需要处理的引用源
      */
     private Mono<Set<AttachmentReference.ReferenceSource>> collectReferenceSources(ReferenceReplacementTask task) {
-        Set<AttachmentReference.ReferenceSource> allSources = ConcurrentHashMap.newKeySet();
-
-        return client.listAll(AttachmentReference.class, ListOptions.builder().build(), Sort.unsorted())
-            .filter(ref -> ref.getSpec() != null
-                && ref.getSpec().getAttachmentName() != null
-                && task.getAttachmentMapping().containsKey(ref.getSpec().getAttachmentName())
-                && ref.getStatus() != null
-                && ref.getStatus().getReferences() != null)
-            .flatMap(ref -> Flux.fromIterable(ref.getStatus().getReferences()))
-            .doOnNext(allSources::add)
-            .then(Mono.just(allSources));
+        // Saved analysis results may be missing or stale. Read current content before migrating it.
+        return referenceContentScanner.scanAll()
+            .map(context -> task.getUrlMapping().keySet().stream()
+                .flatMap(url -> context.findSources(url).stream())
+                .collect(Collectors.toSet()));
     }
 
     /**
@@ -218,18 +209,23 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
 
                 // 使用协调器串行化同一 sourceName 的替换任务，防止并发覆盖
                 Mono<Void> serializedTask = executeReplace(sourceType, sourceName, task)
-                    .flatMap(replaceResult ->
-                        resolveLogTitleAndRefTypes(sourceType, first.getSourceTitle(),
+                    .flatMap(replaceResult -> {
+                        if (!replaceResult.getErrors().isEmpty()) {
+                            result.addFailure(sourceType, sourceName, replaceResult.getErrors().toString());
+                        } else if (!replaceResult.hasReplaced()) {
+                            result.addFailure(sourceType, sourceName, "未能确认引用已替换，请重试");
+                        }
+                        return resolveLogTitleAndRefTypes(sourceType, first.getSourceTitle(),
                             first.getSettingName(), joinedRefTypes)
                         .flatMap(tr -> recordReplaceResult(replaceResult, urlMapping,
                             sourceType, sourceName, tr[0], tr[1], logSource))
                         .then()
                         .doOnSuccess(v -> {
-                            if (replaceResult.hasReplaced()) {
+                            if (replaceResult.hasReplaced() && replaceResult.getErrors().isEmpty()) {
                                 result.incrementTypeCount(sourceType);
                             }
-                        })
-                    );
+                        });
+                    });
 
                 return coordinator.submit(sourceName, serializedTask);
             })
@@ -373,7 +369,7 @@ public class ReferenceReplacerServiceImpl implements ReferenceReplacerService {
             sourceType, sourceName, sourceTitle, referenceType, logSource);
 
         return successLogs.then(failedLogs)
-            .thenReturn(replaceResult.hasReplaced());
+            .thenReturn(replaceResult.hasReplaced() && replaceResult.getErrors().isEmpty());
     }
 
     /**

@@ -18,6 +18,8 @@ dependencies {
     implementation platform('run.halo.tools.platform:plugin:2.23.0')
     compileOnly 'run.halo.app:api'
 
+    implementation 'org.xerial:sqlite-jdbc:3.53.2.0'
+
     // WebP 读写支持（Apache-2.0，含 Linux/macOS/Windows 多架构 native，含 aarch64）
     implementation 'com.github.usefulness:webp-imageio:0.10.2'
     // AVIF 读写支持（含 Windows/Linux arm64、Linux aarch64）
@@ -45,7 +47,7 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs.add("-parameters")
 }
 
-tasks.register('processUiResources', Copy) {
+tasks.register('processUiResources', Sync) {
     from project(':ui').layout.buildDirectory.dir('dist')
     into layout.buildDirectory.dir('resources/main/ui')
     dependsOn project(':ui').tasks.named('assemble')
@@ -60,3 +62,5 @@ halo {
     version = '2.23.0'
 }
 
+
+apply from: 'gradle/native-packaging.gradle'

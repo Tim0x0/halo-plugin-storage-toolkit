@@ -65,6 +65,9 @@ public class CleanupEndpoint {
             ))
             .onErrorResume(IllegalArgumentException.class, e ->
                 Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage()))
+            )
+            .onErrorResume(IllegalStateException.class, e ->
+                Mono.error(new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage()))
             );
     }
 

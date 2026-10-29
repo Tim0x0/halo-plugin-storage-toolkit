@@ -15,7 +15,6 @@ import run.halo.app.extension.Ref;
 
 import java.time.Instant;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -69,204 +68,102 @@ public abstract class AbstractSnapshotContentUpdateHandler<T extends AbstractExt
 
     @Override
     public Mono<ReplaceResult> replaceUrls(String sourceName, ReferenceReplacementTask task,
-                                   ReferenceReplacementResult result) {
+                                           ReferenceReplacementResult result) {
         return client.fetch(getEntityClass(), sourceName)
-            .flatMap(entity -> {
-                ReplaceResult replaceResult = ReplaceResult.builder().build();
-
-                // 1. 计算封面替换
-                String originalCover = getCover(entity);
-                String newCover = originalCover;
-                if (StringUtils.hasText(originalCover)) {
-                    for (Map.Entry<String, String> entry : task.getUrlMapping().entrySet()) {
-                        if (UrlReplacer.containsUrl(newCover, entry.getKey())) {
-                            newCover = UrlReplacer.replaceUrl(newCover, entry.getKey(),
-                                entry.getValue());
-                            replaceResult.addReplaced(entry.getKey());
-                        }
-                    }
-                }
-                final String finalNewCover = newCover;
-                final boolean coverReplaced = originalCover != null && !originalCover.equals(newCover);
-
-                // 2. 处理内容
-                String headSnapshotName = getHeadSnapshot(entity);
-                String baseSnapshotName = getBaseSnapshot(entity);
-
-                if (!StringUtils.hasText(headSnapshotName)) {
-                    if (coverReplaced) {
-                        return updateEntityWithRetry(sourceName, finalNewCover, null, null,
-                            result, replaceResult);
-                    }
-                    return Mono.just(ReplaceResult.empty());  // 没有内容
-                }
-
-                // 确保 baseSnapshotName 存在，如果不存在则使用 headSnapshotName
-                String finalBaseSnapshotName = StringUtils.hasText(baseSnapshotName)
-                    ? baseSnapshotName : headSnapshotName;
-
-                // 同时获取 baseSnapshot 内容和当前 headSnapshot 内容
-                return Mono.zip(
-                    fetchBaseSnapshotContent(finalBaseSnapshotName),
-                    fetchSnapshotContent(headSnapshotName, finalBaseSnapshotName)
-                ).flatMap(tuple -> {
-                    ContentWrapper baseWrapper = tuple.getT1();
-                    ContentWrapper headWrapper = tuple.getT2();
-
-                    String baseRaw = baseWrapper.getRaw();
-                    String baseContent = baseWrapper.getContent();
-                    String rawType = baseWrapper.getRawType();
-                    String currentRaw = headWrapper.getRaw();
-                    String currentContent = headWrapper.getContent();
-
-                    if (!StringUtils.hasText(currentRaw)) {
-                        if (coverReplaced) {
-                            return updateEntityWithRetry(sourceName, finalNewCover, null, null,
-                                result, replaceResult);
-                        }
-                        return Mono.just(ReplaceResult.empty());  // 没有内容
-                    }
-
-                    // 分别替换 Markdown 和 HTML 中的 URL
-                    ReplacedContent headReplaced = applyUrlMapping(currentRaw, currentContent,
-                        task.getUrlMapping(), replaceResult);
-                    String newRaw = headReplaced.raw();
-                    String newContent = headReplaced.content();
-                    boolean contentReplaced = headReplaced.replaced();
-
-                    if (!contentReplaced && !coverReplaced) {
-                        return Mono.just(ReplaceResult.empty());  // 未找到匹配内容
-                    }
-
-                    if (contentReplaced) {
-                        String originalReleaseSnapshot = getReleaseSnapshot(entity);
-                        boolean wasPublished = StringUtils.hasText(originalReleaseSnapshot)
-                            && originalReleaseSnapshot.equals(headSnapshotName);
-
-                        // 创建新的 head 快照（草稿/编辑版本）
-                        return createNewSnapshot(newRaw, newContent, baseRaw, baseContent,
-                            rawType, entity, headSnapshotName)
-                            .flatMap(newHeadSnapshotName -> {
-                                if (wasPublished) {
-                                    // release == head：已发布且无未发布草稿，
-                                    // head 和 release 同步指向新快照
-                                    return updateEntityWithRetry(sourceName, finalNewCover,
-                                        newHeadSnapshotName, newHeadSnapshotName,
-                                        result, replaceResult);
-                                }
-                                if (StringUtils.hasText(originalReleaseSnapshot)) {
-                                    // release != head：已发布且存在未发布草稿，
-                                    // 需对 release 内容单独执行替换
-                                    return replaceReleaseSnapshot(sourceName, entity, task,
-                                        originalReleaseSnapshot, finalBaseSnapshotName,
-                                        baseRaw, baseContent, rawType,
-                                        finalNewCover, newHeadSnapshotName,
-                                        result, replaceResult);
-                                }
-                                // 从未发布，只更新 head
-                                return updateEntityWithRetry(sourceName, finalNewCover,
-                                    newHeadSnapshotName, null, result, replaceResult);
-                            });
-                    } else {
-                        return updateEntityWithRetry(sourceName, finalNewCover, null, null,
-                            result, replaceResult);
-                    }
-                });
+            .flatMap(entity -> replaceEntity(entity, task, result))
+            .onErrorResume(error -> {
+                log.error("{} {} 替换失败: {}", getSourceType(), sourceName, error.getMessage());
+                ReplaceResult failed = ReplaceResult.builder().build();
+                task.getUrlMapping().keySet().forEach(url -> failed.addError(url, error.getMessage()));
+                return Mono.just(failed);
             })
-            .onErrorResume(e -> {
-                log.error("{} {} 替换失败: {}", getSourceType(), sourceName, e.getMessage());
-                ReplaceResult errorResult = ReplaceResult.builder().build();
-                for (Map.Entry<String, String> entry : task.getUrlMapping().entrySet()) {
-                    errorResult.addError(entry.getKey(), e.getMessage());
-                }
-                return Mono.just(errorResult);
-            })
-            .defaultIfEmpty(ReplaceResult.empty());  // 实体不存在
+            .defaultIfEmpty(ReplaceResult.empty());
     }
 
-    /**
-     * 带重试的实体更新操作
-     * retry 只包裹 fetch + update，快照不会重复创建
-     *
-     * @param entityName 实体名称
-     * @param newCover 新封面 URL
-     * @param headSnapshotName head 快照名称（用于草稿/编辑版本）
-     * @param releaseSnapshotName release 快照名称（用于已发布版本，null 则不更新）
-     * @param result 引用替换结果（用于统计）
-     * @param replaceResult 单次替换结果
-     * @return 替换结果
-     */
-    private Mono<ReplaceResult> updateEntityWithRetry(String entityName, String newCover,
-                                              String headSnapshotName, String releaseSnapshotName,
-                                              ReferenceReplacementResult result,
-                                              ReplaceResult replaceResult) {
-        return Mono.defer(() -> client.fetch(getEntityClass(), entityName)
-            .flatMap(latestEntity -> {
-                if (newCover != null) {
-                    setCover(latestEntity, newCover);
-                }
-                if (headSnapshotName != null) {
-                    setHeadSnapshot(latestEntity, headSnapshotName);
-                }
-                if (releaseSnapshotName != null) {
-                    setReleaseSnapshot(latestEntity, releaseSnapshotName);
-                }
-                return client.update(latestEntity);
-            })
-        )
-        .retryWhen(RetryUtils.optimisticLockRetry())
-        .doOnSuccess(v -> {
-            log.debug("{} {} 引用替换成功，替换了 {} 个 URL", getSourceType(), entityName,
-                replaceResult.getReplaced().size());
-            result.incrementTypeCount(getSourceType());
-        })
-        .thenReturn(replaceResult)
-        .onErrorResume(e -> {
-            log.error("{} {} 更新失败（重试耗尽）: {}", getSourceType(), entityName, e.getMessage());
-            // 将成功匹配的 URL 转为错误
-            ReplaceResult errorResult = ReplaceResult.builder().build();
-            for (String url : replaceResult.getReplaced()) {
-                errorResult.addError(url, e.getMessage());
+    private Mono<ReplaceResult> replaceEntity(T entity, ReferenceReplacementTask task,
+                                              ReferenceReplacementResult result) {
+        ReplaceResult replacedUrls = ReplaceResult.builder().build();
+        String cover = getCover(entity);
+        String newCover = cover;
+        for (var entry : task.getUrlMapping().entrySet()) {
+            if (UrlReplacer.containsUrl(newCover, entry.getKey())) {
+                newCover = UrlReplacer.replaceUrl(newCover, entry.getKey(), entry.getValue());
+                replacedUrls.addReplaced(entry.getKey());
             }
-            return Mono.just(errorResult);
-        });
+        }
+        final String changedCover = java.util.Objects.equals(cover, newCover) ? null : newCover;
+        String headName = getHeadSnapshot(entity);
+        String releaseName = getReleaseSnapshot(entity);
+        if (!StringUtils.hasText(headName) && !StringUtils.hasText(releaseName)) {
+            return changedCover != null
+                ? updateEntityWithRetry(entity, changedCover, null, null, result, replacedUrls)
+                : Mono.just(ReplaceResult.empty());
+        }
+        String baseName = StringUtils.hasText(getBaseSnapshot(entity)) ? getBaseSnapshot(entity)
+            : (StringUtils.hasText(headName) ? headName : releaseName);
+
+        return client.fetch(Snapshot.class, baseName)
+            .switchIfEmpty(Mono.error(new IllegalStateException("基础快照不存在: " + baseName)))
+            .flatMap(base -> {
+                Mono<ContentWrapper> head = fetchSnapshotContent(headName, base).cache();
+                Mono<ContentWrapper> release = java.util.Objects.equals(headName, releaseName)
+                    ? head : fetchSnapshotContent(releaseName, base);
+                return Mono.zip(head, release).flatMap(contents -> {
+                    ReplacedContent newHead = applyUrlMapping(contents.getT1().getRaw(),
+                        contents.getT1().getContent(), task.getUrlMapping(), replacedUrls);
+                    boolean sameSnapshot = StringUtils.hasText(releaseName) && releaseName.equals(headName);
+                    ReplacedContent newRelease = sameSnapshot ? newHead
+                        : applyUrlMapping(contents.getT2().getRaw(), contents.getT2().getContent(),
+                            task.getUrlMapping(), replacedUrls);
+                    if (!newHead.replaced() && !newRelease.replaced() && changedCover == null) {
+                        return Mono.just(ReplaceResult.empty());
+                    }
+
+                    return createReplacementSnapshot(newHead, base, entity, headName)
+                        .flatMap(newHeadName -> {
+                            Mono<String> releaseSnapshot = sameSnapshot ? Mono.just(newHeadName)
+                                : createReplacementSnapshot(newRelease, base, entity, releaseName);
+                            return releaseSnapshot.flatMap(newReleaseName -> updateEntityWithRetry(entity,
+                                changedCover, StringUtils.hasText(newHeadName) ? newHeadName : null,
+                                StringUtils.hasText(newReleaseName) ? newReleaseName : null,
+                                result, replacedUrls));
+                        });
+                });
+            });
     }
 
-    /**
-     * 对 release 快照内容执行替换（release != head 场景，即已发布且存在未发布草稿）
-     * release 内容有匹配时创建新快照并同时更新 head/release；
-     * 无匹配或 release 快照处理失败时仅更新 head（避免把已发布内容错误回退到 base 版本）
-     */
-    private Mono<ReplaceResult> replaceReleaseSnapshot(String sourceName, T entity,
-                                               ReferenceReplacementTask task,
-                                               String originalReleaseSnapshot,
-                                               String baseSnapshotName,
-                                               String baseRaw, String baseContent, String rawType,
-                                               String newCover, String newHeadSnapshotName,
-                                               ReferenceReplacementResult result,
-                                               ReplaceResult replaceResult) {
-        return fetchSnapshotContentStrict(originalReleaseSnapshot, baseSnapshotName)
-            .flatMap(releaseWrapper -> {
-                ReplacedContent replaced = applyUrlMapping(releaseWrapper.getRaw(),
-                    releaseWrapper.getContent(), task.getUrlMapping(), replaceResult);
-                if (!replaced.replaced()) {
-                    // release 内容无匹配，只更新 head
-                    return updateEntityWithRetry(sourceName, newCover,
-                        newHeadSnapshotName, null, result, replaceResult);
+    private Mono<String> createReplacementSnapshot(ReplacedContent content, Snapshot base,
+                                                    T entity, String parentSnapshotName) {
+        if (!content.replaced()) {
+            // An empty name means the entity must retain its existing snapshot pointer.
+            return Mono.just("");
+        }
+        return createNewSnapshot(content.raw(), content.content(), base.getSpec().getRawPatch(),
+            base.getSpec().getContentPatch(), base.getSpec().getRawType(), entity, parentSnapshotName);
+    }
+
+    private Mono<ReplaceResult> updateEntityWithRetry(T original, String newCover,
+                                                      String headSnapshotName, String releaseSnapshotName,
+                                                      ReferenceReplacementResult result, ReplaceResult replacedUrls) {
+        String name = original.getMetadata().getName();
+        return Mono.defer(() -> client.fetch(getEntityClass(), name)
+            .switchIfEmpty(Mono.error(new IllegalStateException("内容不存在: " + name)))
+            .flatMap(latest -> {
+                // A concurrent editor must not lose a newer draft or publication to our old snapshot.
+                if (!java.util.Objects.equals(getHeadSnapshot(original), getHeadSnapshot(latest))
+                    || !java.util.Objects.equals(getReleaseSnapshot(original), getReleaseSnapshot(latest))
+                    || !java.util.Objects.equals(getBaseSnapshot(original), getBaseSnapshot(latest))
+                    || (newCover != null && !java.util.Objects.equals(getCover(original), getCover(latest)))) {
+                    return Mono.error(new IllegalStateException("内容已被修改，请重试引用替换: " + name));
                 }
-                return createNewSnapshot(replaced.raw(), replaced.content(),
-                    baseRaw, baseContent, rawType, entity, originalReleaseSnapshot)
-                    .flatMap(newReleaseSnapshotName ->
-                        updateEntityWithRetry(sourceName, newCover,
-                            newHeadSnapshotName, newReleaseSnapshotName,
-                            result, replaceResult));
-            })
-            .onErrorResume(e -> {
-                log.warn("{} {} 的 release 快照 {} 替换失败，仅更新 head: {}", getSourceType(),
-                    sourceName, originalReleaseSnapshot, e.getMessage());
-                return updateEntityWithRetry(sourceName, newCover,
-                    newHeadSnapshotName, null, result, replaceResult);
-            });
+                if (newCover != null) setCover(latest, newCover);
+                if (headSnapshotName != null) setHeadSnapshot(latest, headSnapshotName);
+                if (releaseSnapshotName != null) setReleaseSnapshot(latest, releaseSnapshotName);
+                return client.update(latest);
+            }))
+            .retryWhen(RetryUtils.optimisticLockRetry())
+            .doOnSuccess(value -> result.incrementTypeCount(getSourceType()))
+            .thenReturn(replacedUrls);
     }
 
     /** URL 替换后的内容 */
@@ -300,59 +197,16 @@ public abstract class AbstractSnapshotContentUpdateHandler<T extends AbstractExt
         return new ReplacedContent(newRaw, newContent, replaced);
     }
 
-    /**
-     * 获取快照内容（严格模式）
-     * 与 {@link #fetchSnapshotContent} 不同：目标快照缺失或获取失败时直接报错，
-     * 不回退返回 base 内容，供 release 替换使用
-     */
-    private Mono<ContentWrapper> fetchSnapshotContentStrict(String snapshotName,
-                                                            String baseSnapshotName) {
-        return client.fetch(Snapshot.class, baseSnapshotName)
-            .flatMap(baseSnapshot -> {
-                if (snapshotName.equals(baseSnapshotName)) {
-                    return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
-                }
-                return client.fetch(Snapshot.class, snapshotName)
-                    .map(snapshot -> ContentWrapper.patchSnapshot(snapshot, baseSnapshot));
-            })
-            .switchIfEmpty(Mono.error(new IllegalStateException(
-                "快照 " + snapshotName + " 或 base 快照 " + baseSnapshotName + " 不存在")));
-    }
-
-    /**
-     * 获取快照内容
-     * Halo 快照采用星形结构：所有快照的 patch 都是相对于 baseSnapshot 计算的
-     */
-    private Mono<ContentWrapper> fetchSnapshotContent(String headSnapshotName,
-                                                       String baseSnapshotName) {
-        return client.fetch(Snapshot.class, baseSnapshotName)
-            .flatMap(baseSnapshot -> {
-                if (headSnapshotName.equals(baseSnapshotName)) {
-                    return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
-                }
-                return client.fetch(Snapshot.class, headSnapshotName)
-                    .map(headSnapshot -> ContentWrapper.patchSnapshot(headSnapshot, baseSnapshot))
-                    .onErrorResume(e -> {
-                        log.error("获取快照 {} 内容失败: {}", headSnapshotName, e.getMessage());
-                        return Mono.just(ContentWrapper.patchSnapshot(baseSnapshot, baseSnapshot));
-                    });
-            });
-    }
-
-    /**
-     * 获取 baseSnapshot 的完整内容（用于计算新快照的 patch）
-     * Halo 星形结构：所有快照的 patch 都相对于 baseSnapshot 计算
-     */
-    private Mono<ContentWrapper> fetchBaseSnapshotContent(String baseSnapshotName) {
-        return client.fetch(Snapshot.class, baseSnapshotName)
-            .map(snapshot -> ContentWrapper.builder()
-                .snapshotName(snapshot.getMetadata().getName())
-                .raw(snapshot.getSpec().getRawPatch() != null
-                    ? snapshot.getSpec().getRawPatch() : "")
-                .content(snapshot.getSpec().getContentPatch() != null
-                    ? snapshot.getSpec().getContentPatch() : "")
-                .rawType(snapshot.getSpec().getRawType())
-                .build());
+    private Mono<ContentWrapper> fetchSnapshotContent(String snapshotName, Snapshot base) {
+        if (!StringUtils.hasText(snapshotName)) {
+            return Mono.just(ContentWrapper.builder().raw("").content("").build());
+        }
+        if (snapshotName.equals(base.getMetadata().getName())) {
+            return Mono.just(ContentWrapper.patchSnapshot(base, base));
+        }
+        return client.fetch(Snapshot.class, snapshotName)
+            .switchIfEmpty(Mono.error(new IllegalStateException("内容快照不存在: " + snapshotName)))
+            .map(snapshot -> ContentWrapper.patchSnapshot(snapshot, base));
     }
 
     /**
@@ -365,11 +219,9 @@ public abstract class AbstractSnapshotContentUpdateHandler<T extends AbstractExt
                                             String baseRaw, String baseContent,
                                             String rawType, T entity,
                                             String parentSnapshotName) {
-        String rawPatch = PatchUtils.diffToJsonPatch(baseRaw, newRaw);
-        // 修复：HTML 为空时使用空 JSON Patch，而非 rawPatch
-        String contentPatch = StringUtils.hasText(baseContent) && StringUtils.hasText(newContent)
-            ? PatchUtils.diffToJsonPatch(baseContent, newContent)
-            : "[]";
+        String rawPatch = PatchUtils.diffToJsonPatch(baseRaw != null ? baseRaw : "", newRaw != null ? newRaw : "");
+        String contentPatch = PatchUtils.diffToJsonPatch(baseContent != null ? baseContent : "",
+            newContent != null ? newContent : "");
 
         Snapshot snapshot = new Snapshot();
         String newSnapshotName = entity.getMetadata().getName() + "-"

@@ -103,6 +103,8 @@
       </div>
     </div>
 
+    <TaskHistory :busy="processing" @started="onHistoryTaskStarted" />
+
     <!-- 附件列表 - 表格样式 -->
     <div class="list-card st-card">
       <VLoading v-if="loading" />
@@ -217,9 +219,13 @@
           <div class="confirm-option-hint">⚠️ 此功能会修改文章/页面/评论/设置中的链接内容</div>
         </div>
 
+        <OperationImpactPreview v-if="showCustomDialog" operation="BATCH"
+          :attachment-names="selectedAttachments" :replace-references="replaceReferences"
+          @ready="previewEligibleNames = $event" />
+
         <!-- 底部提示 -->
         <div class="confirm-tip">
-          ⚠️ 批量处理前<strong class="text-danger">必须先执行「引用扫描」</strong>，否则新内容中的图片引用无法被自动替换
+          引用影响将按当前内容实时预览，执行时再次核验。
         </div>
       </div>
     </template>
@@ -227,6 +233,7 @@
       <div class="confirm-footer">
         <VButton
           :type="getConfirmType() === 'danger' ? 'danger' : 'primary'"
+          :disabled="previewEligibleNames.length === 0"
           @click="handleDialogConfirm"
         >
           开始处理
@@ -250,6 +257,8 @@ import StatCard from '@/components/StatCard.vue'
 import StProgressBar from '@/components/StProgressBar.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import BatchPreviewModal from '@/views/panels/components/BatchPreviewModal.vue'
+import TaskHistory from './components/TaskHistory.vue'
+import OperationImpactPreview from './components/OperationImpactPreview.vue'
 
 interface AttachmentItem {
   name: string
@@ -452,6 +461,7 @@ const scheduleSettleRefetch = () => {
 // 开始处理
 const replaceReferences = ref(true)  // 默认勾选替换引用
 const showCustomDialog = ref(false)
+const previewEligibleNames = ref<string[]>([])
 
 const startProcessing = () => {
   if (selectedAttachments.value.length === 0) return
@@ -462,28 +472,15 @@ const startProcessing = () => {
 
 // 处理自定义对话框确认
 const handleDialogConfirm = async () => {
-  // 如果勾选了自动替换引用，显示二次确认
-  if (replaceReferences.value) {
-    Dialog.warning({
-      title: '确认批量处理',
-      description: '⚠️ 是否已执行「引用扫描」？未扫描的情况下，新内容中的图片引用将无法被自动替换。',
-      confirmType: 'danger',
-      confirmText: '已扫描，开始处理',
-      cancelText: '去扫描',
-      async onConfirm() {
-        showCustomDialog.value = false
-        await executeBatchProcessing()
-      },
-      onCancel() {
-        // 关闭当前对话框，保留自定义对话框以便用户去扫描
-        Toast.info('请先在「分析」面板执行引用扫描')
-      }
-    })
-  } else {
-    // 未勾选自动替换引用，直接执行
-    showCustomDialog.value = false
-    await executeBatchProcessing()
-  }
+  if (!previewEligibleNames.value.length) return
+  showCustomDialog.value = false
+  await executeBatchProcessing()
+}
+
+const onHistoryTaskStarted = () => {
+  clearResults()
+  processing.value = true
+  startPolling()
 }
 
 // 执行批量处理任务

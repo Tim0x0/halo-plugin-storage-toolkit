@@ -42,7 +42,7 @@ withDefaults(
   gap: 12px;
   padding: 16px 20px;
   min-width: 0;
-  transition: var(--st-transition);
+  transition: border-color var(--st-duration) var(--st-ease);
 }
 
 .stat-card:hover {
@@ -54,11 +54,11 @@ withDefaults(
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
   border-radius: var(--st-radius-md);
-  background: var(--st-bg-muted);
+  background: var(--st-bg-hover);
   color: var(--st-text-secondary);
 }
 
@@ -100,8 +100,8 @@ withDefaults(
 }
 
 .stat-value {
-  font-size: 22px;
-  font-weight: 600;
+  font-size: 26px;
+  font-weight: 550;
   line-height: 1.2;
   color: var(--st-text-primary);
   font-variant-numeric: tabular-nums;
